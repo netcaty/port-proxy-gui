@@ -1,0 +1,24 @@
+# Build results
+bin/
+obj/
+dist/
+
+# Visual Studio / Rider
+.vs/
+.idea/
+*.user
+*.suo
+*.DotSettings.user
+
+# Test / coverage
+TestResults/
+*.trx
+coverage*
+
+# Logs and temp
+*.log
+*.tmp
+
+# OS
+Thumbs.db
+.DS_Store
