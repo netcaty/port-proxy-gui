@@ -426,7 +426,11 @@ public static class NetworkHintService
 
         var vmTask = ProbeHyperVAsync(baseHints, Math.Min(timeoutMs, 8000));
         var vmCliTask = ProbeVmNamesAsync(baseHints, Math.Min(timeoutMs, 8000));
-        var wsbTask = ProbeWindowsSandboxAsync(baseHints, 12000);
+
+        // wsb ip 在部分 Windows 版本上会永久挂起（实测 20s+），已停用。
+        // wsb list 只用来确认是否有运行中的沙盒，IP 始终走 ARP/Hyper-V 兜底。
+        var wsbTask = DetectRunningSandboxAsync(4000);
+
         var sandboxRunning = IsWindowsSandboxRunning();
         var sandboxNameTask = sandboxRunning
             ? GetWindowsSandboxNameAsync(Math.Min(timeoutMs, 4000))
@@ -444,18 +448,7 @@ public static class NetworkHintService
         var sandboxName = sandboxNameTask.IsCompletedSuccessfully ? sandboxNameTask.Result : null;
         var identified = new List<AddressHint>();
 
-        // 新版 wsb CLI 给出的沙盒 IP 最可靠，放在最前面
-        if (wsbTask.IsCompletedSuccessfully)
-        {
-            foreach (var hint in wsbTask.Result)
-            {
-                identified.Add(!string.IsNullOrWhiteSpace(sandboxName)
-                    ? hint with { Id = sandboxName, Source = sandboxName }
-                    : hint);
-            }
-        }
-
-        // VMware / VirtualBox 的 CLI 结果给出确切虚拟机名，其次保留
+        // VMware / VirtualBox 的 CLI 结果给出确切虚拟机名
         if (vmCliTask.IsCompletedSuccessfully) identified.AddRange(vmCliTask.Result);
 
         if (vmTask.IsCompletedSuccessfully)
@@ -469,10 +462,9 @@ public static class NetworkHintService
             }
         }
 
-        // wsb CLI 已给出权威地址时不再做 ARP 启发式，避免同一沙盒出现两条；
-        // 老版本没有 wsb 命令、或命令超时失败时，才走原来的兜底逻辑。
-        var hasWsbHints = wsbTask.IsCompletedSuccessfully && wsbTask.Result.Count > 0;
-        if (sandboxRunning && !hasWsbHints)
+        // wsb list 的检测和进程启发式任一命中，就走 ARP/Hyper-V 兜底
+        var wsbDetected = wsbTask.IsCompletedSuccessfully && wsbTask.Result;
+        if (sandboxRunning || wsbDetected)
         {
             AddSandboxHints(baseHints, vmTask, sandboxName, identified);
         }
@@ -559,16 +551,14 @@ public static class NetworkHintService
     }
 
     /// <summary>
-    /// 新版 Windows 沙盒自带 wsb CLI，用 `wsb list` 列出运行中的沙盒 ID，
-    /// 再用 `wsb ip --id` 直接取 IPv4 地址，比 ARP + 微软 OUI 猜测可靠。
-    /// 老版本没有该命令时返回空，由 AddSandboxHints 的启发式兜底。
+    /// 新版 Windows 沙盒自带 wsb CLI。`wsb list` 只用来确认是否有运行中的沙盒；
+    /// `wsb ip` 在部分 Windows 版本上会永久挂起（实测 20s+），已停用，
+    /// 沙盒 IP 统一由 ARP + Hyper-V 启发式兜底。
     /// </summary>
-    private static async Task<IReadOnlyList<AddressHint>> ProbeWindowsSandboxAsync(
-        IReadOnlyList<AddressHint> baseHints,
-        int timeoutMs)
+    private static async Task<bool> DetectRunningSandboxAsync(int timeoutMs)
     {
         var wsb = FindWindowsSandboxCli();
-        if (wsb is null) return Array.Empty<AddressHint>();
+        if (wsb is null) return false;
 
         try
         {
@@ -580,138 +570,26 @@ public static class NetworkHintService
                     LogService.Current?.Info($"wsb list 未执行：{error}");
                 return result;
             }).ConfigureAwait(false);
-            if (list is null || !list.Ok) return Array.Empty<AddressHint>();
+
+            if (list is null || !list.Ok) return false;
 
             var ids = ParseSandboxIds(list.StdOut);
-            if (ids.Count == 0) return Array.Empty<AddressHint>();
+            if (ids.Count == 0) return false;
 
             var idsText = string.Join(",", ids);
             if (!string.Equals(_lastWsbIds, idsText, StringComparison.OrdinalIgnoreCase))
             {
                 _lastWsbIds = idsText;
-                LogService.Current?.Info($"wsb CLI 发现 {ids.Count} 个运行中的沙盒。");
+                LogService.Current?.Info(
+                    $"wsb CLI 发现 {ids.Count} 个运行中的沙盒；wsb ip 已停用，IP 走 ARP/Hyper-V 兜底。");
             }
 
-            // 同一批沙盒刚超时过就不要每次都再等一遍；新沙盒 ID 出现时会自动重试
-            if (ShouldSkipSandboxIp(idsText)) return Array.Empty<AddressHint>();
-
-            var tasks = ids
-                .Take(8)
-                .Select(id => Task.Run(() => QuerySandboxIp(wsb, id, timeoutMs)))
-                .ToList();
-
-            try
-            {
-                await Task.WhenAll(tasks).ConfigureAwait(false);
-            }
-            catch (Exception ex)
-            {
-                LogService.Current?.Info($"查询沙盒 IP 失败：{ex.Message}");
-            }
-
-            var anySuccess = tasks.Any(t =>
-                t.IsCompletedSuccessfully && t.Result.Result is { Ok: true });
-            var allTimedOut = tasks.Count > 0 && tasks.All(t =>
-                t.IsCompletedSuccessfully && t.Result.TimedOut);
-
-            if (anySuccess) ClearSandboxIpBlock();
-            else if (allTimedOut) BlockSandboxIp(idsText);
-
-            var localIps = new HashSet<string>(
-                EnumerateLocalNetwork().Adapters.Select(a => a.Address),
-                StringComparer.OrdinalIgnoreCase);
-
-            var hints = new List<AddressHint>();
-            foreach (var task in tasks)
-            {
-                if (!task.IsCompletedSuccessfully) continue;
-
-                var (id, result, _) = task.Result;
-                if (result is null || !result.Ok) continue;
-
-                var ips = ExtractIpv4Addresses(result.StdOut)
-                    .Where(ip => !localIps.Contains(ip))
-                    .ToList();
-                if (ips.Count == 0) continue;
-
-                var primary = ChooseSandboxPrimaryIp(ips, baseHints);
-                var known = baseHints.FirstOrDefault(h =>
-                    string.Equals(h.Address, primary, StringComparison.OrdinalIgnoreCase));
-
-                hints.Add(new AddressHint(
-                    primary,
-                    "Windows 沙盒",
-                    known?.Source,
-                    $"沙盒 ID {id}",
-                    known?.Mac,
-                    "wsb",
-                    id));
-            }
-
-            return Deduplicate(hints);
+            return true;
         }
         catch (Exception ex)
         {
-            LogService.Current?.Info($"查询 Windows 沙盒 IP 跳过：{ex.Message}");
-            return Array.Empty<AddressHint>();
-        }
-    }
-
-    /// <summary>单个沙盒的 IP 查询；超时就放弃，不影响其他沙盒和兜底逻辑。</summary>
-    private static (string Id, ProcResult? Result, bool TimedOut) QuerySandboxIp(
-        string wsb,
-        string id,
-        int timeoutMs)
-    {
-        var result = RunWsb(
-            wsb,
-            new[] { "ip", "--id", id, "--raw" },
-            Math.Min(timeoutMs, SandboxIpTimeoutMs),
-            out var error);
-
-        if (result is null)
-        {
-            var timedOut = error?.Contains("没有结束", StringComparison.Ordinal) == true;
-
-            LogService.Current?.Info(timedOut
-                ? $"wsb ip 查询沙盒 {id} 超时（{SandboxIpTimeoutMs} ms），改用 ARP/Hyper-V 兜底。"
-                : $"读取沙盒 {id} 的 IP 失败：{error}");
-
-            return (id, null, timedOut);
-        }
-
-        return (id, result, false);
-    }
-
-    private static bool ShouldSkipSandboxIp(string idsText)
-    {
-        lock (SandboxIpGate)
-        {
-            return _sandboxIpBlockedIds is not null
-                   && string.Equals(_sandboxIpBlockedIds, idsText, StringComparison.OrdinalIgnoreCase)
-                   && DateTime.UtcNow - _sandboxIpBlockedAtUtc < SandboxIpBlockedTtl;
-        }
-    }
-
-    private static void BlockSandboxIp(string idsText)
-    {
-        lock (SandboxIpGate)
-        {
-            _sandboxIpBlockedIds = idsText;
-            _sandboxIpBlockedAtUtc = DateTime.UtcNow;
-        }
-
-        LogService.Current?.Info(
-            $"wsb ip 连续超时，改用 ARP/Hyper-V 兜底；" +
-            $"{SandboxIpBlockedTtl.TotalMinutes:0} 分钟内不再重试。");
-    }
-
-    private static void ClearSandboxIpBlock()
-    {
-        lock (SandboxIpGate)
-        {
-            _sandboxIpBlockedIds = null;
-            _sandboxIpBlockedAtUtc = DateTime.MinValue;
+            LogService.Current?.Info($"wsb list 跳过：{ex.Message}");
+            return false;
         }
     }
 
@@ -744,10 +622,6 @@ public static class NetworkHintService
         @"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}",
         RegexOptions.Compiled);
 
-    private static readonly Regex Ipv4Token = new(
-        @"(?<![\d.])(?:\d{1,3}\.){3}\d{1,3}(?![\d.])",
-        RegexOptions.Compiled);
-
     private static List<string> ParseSandboxIds(string text)
     {
         var result = new List<string>();
@@ -757,50 +631,6 @@ public static class NetworkHintService
             if (seen.Add(match.Value)) result.Add(match.Value);
 
         return result;
-    }
-
-    /// <summary>
-    /// 从 wsb 的 JSON / 纯文本输出里提取 IPv4。JSON 字段名随版本变化
-    /// （ipV4Address / ipV4Addresses），直接扫描字符串更稳。
-    /// </summary>
-    private static List<string> ExtractIpv4Addresses(string text)
-    {
-        var result = new List<string>();
-        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-
-        foreach (Match match in Ipv4Token.Matches(text))
-        {
-            if (!IPAddress.TryParse(match.Value, out var ip)) continue;
-            if (ip.AddressFamily != AddressFamily.InterNetwork) continue;
-            if (IsUseless(ip)) continue;
-
-            var textIp = ip.ToString();
-            if (seen.Add(textIp)) result.Add(textIp);
-        }
-
-        return result;
-    }
-
-    /// <summary>沙盒有多块网卡时优先选 Default Switch 上的地址。</summary>
-    private static string ChooseSandboxPrimaryIp(
-        IReadOnlyList<string> ips,
-        IReadOnlyList<AddressHint> baseHints)
-    {
-        foreach (var ip in ips)
-        {
-            var known = baseHints.FirstOrDefault(h =>
-                string.Equals(h.Address, ip, StringComparison.OrdinalIgnoreCase));
-            if (known is not null && LooksLikeDefaultSwitch(known)) return ip;
-        }
-
-        foreach (var ip in ips)
-        {
-            if (baseHints.Any(h =>
-                string.Equals(h.Address, ip, StringComparison.OrdinalIgnoreCase)))
-                return ip;
-        }
-
-        return ips[0];
     }
 
     /// <summary>
@@ -1300,14 +1130,6 @@ public static class NetworkHintService
     private static DateTime _sandboxCliAtUtc = DateTime.MinValue;
     private static readonly TimeSpan SandboxCliTtl = TimeSpan.FromMinutes(10);
     private static string? _lastWsbIds;
-
-    // wsb ip 在部分 Windows 版本上会一直挂住（实测 20 秒以上不返回），
-    // 超时一次后就临时跳过，直接用 ARP / Hyper-V 兜底，避免每次刷新都等它。
-    private static readonly object SandboxIpGate = new();
-    private static string? _sandboxIpBlockedIds;
-    private static DateTime _sandboxIpBlockedAtUtc = DateTime.MinValue;
-    private static readonly TimeSpan SandboxIpBlockedTtl = TimeSpan.FromMinutes(5);
-    private const int SandboxIpTimeoutMs = 1500;
 
     /// <summary>
     /// 找 Windows 沙盒 CLI。优先直接运行包内 wsb.exe：
