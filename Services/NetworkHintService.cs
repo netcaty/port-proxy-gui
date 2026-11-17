@@ -572,15 +572,25 @@ public static class NetworkHintService
 
         try
         {
-            var list = await Task.Run(() => ProcRunner.Run(
-                wsb,
-                new[] { "list" },
-                Math.Min(timeoutMs, 4000),
-                ProcTextEncoding.Utf8)).ConfigureAwait(false);
-            if (!list.Ok) return Array.Empty<AddressHint>();
+            var list = await Task.Run(() =>
+            {
+                var result = RunWsb(
+                    wsb, new[] { "list" }, Math.Min(timeoutMs, 4000), out var error);
+                if (result is null)
+                    LogService.Current?.Info($"wsb list 未执行：{error}");
+                return result;
+            }).ConfigureAwait(false);
+            if (list is null || !list.Ok) return Array.Empty<AddressHint>();
 
             var ids = ParseSandboxIds(list.StdOut);
             if (ids.Count == 0) return Array.Empty<AddressHint>();
+
+            var idsText = string.Join(",", ids);
+            if (!string.Equals(_lastWsbIds, idsText, StringComparison.OrdinalIgnoreCase))
+            {
+                _lastWsbIds = idsText;
+                LogService.Current?.Info($"wsb CLI 发现 {ids.Count} 个运行中的沙盒。");
+            }
 
             var tasks = ids
                 .Take(8)
@@ -642,23 +652,43 @@ public static class NetworkHintService
         string id,
         int timeoutMs)
     {
+        var result = RunWsb(
+            wsb,
+            new[] { "ip", "--id", id, "--raw" },
+            Math.Min(timeoutMs, 8000),
+            out var error);
+
+        if (result is null)
+        {
+            LogService.Current?.Info($"读取沙盒 {id} 的 IP 失败：{error}");
+            return (id, null);
+        }
+
+        return (id, result);
+    }
+
+    /// <summary>
+    /// 提权进程不能直接跑 wsb：它按令牌 Owner SID 算管道名，和普通用户
+    /// 启动的 WindowsSandboxServer 对不上。这里改用 explorer 的普通用户令牌。
+    /// </summary>
+    private static ProcResult? RunWsb(
+        string wsb,
+        IReadOnlyList<string> args,
+        int timeoutMs,
+        out string? error)
+    {
+        if (Elevation.IsElevated)
+            return ShellProcessRunner.TryRun(wsb, args, timeoutMs, out error);
+
         try
         {
-            return (id, ProcRunner.Run(
-                wsb,
-                new[] { "ip", "--id", id, "--raw" },
-                Math.Min(timeoutMs, 8000),
-                ProcTextEncoding.Utf8));
-        }
-        catch (TimeoutException)
-        {
-            LogService.Current?.Info($"读取沙盒 {id} 的 IP 超时，跳过。");
-            return (id, null);
+            error = null;
+            return ProcRunner.Run(wsb, args, timeoutMs, ProcTextEncoding.Utf8);
         }
         catch (Exception ex)
         {
-            LogService.Current?.Info($"读取沙盒 {id} 的 IP 失败：{ex.Message}");
-            return (id, null);
+            error = ex.Message;
+            return null;
         }
     }
 
@@ -1221,6 +1251,7 @@ public static class NetworkHintService
     private static string? _sandboxCliPath;
     private static DateTime _sandboxCliAtUtc = DateTime.MinValue;
     private static readonly TimeSpan SandboxCliTtl = TimeSpan.FromMinutes(10);
+    private static string? _lastWsbIds;
 
     /// <summary>
     /// 找 Windows 沙盒 CLI。优先直接运行包内 wsb.exe：

@@ -90,6 +90,9 @@ public sealed class MainForm : Form
         StartWatcher();
         InitializeFollowSync();
 
+        // 启动时在后台预热全部目标地址候选，打开编辑窗口即可直接选
+        _ = WarmCandidateHintsAsync();
+
         // 启动时按保留策略清一次旧快照，避免历史备份无限增长
         BackupService.Prune(_paths, _settings.Value);
 
@@ -807,15 +810,36 @@ public sealed class MainForm : Form
 
         NetworkChange.NetworkAddressChanged += OnNetworkAddressChanged;
 
-        // 启动后稍等再同步一次，避免和窗口初始化、注册表监听抢资源
+        // 启动后稍等再同步一次；候选地址已在启动时开始预热，这里复用结果，
+        // forceRefresh:false 可避免同一次启动里重复探测 WSL / 虚拟机。
         var startup = new System.Windows.Forms.Timer { Interval = 4000 };
         startup.Tick += (_, _) =>
         {
             startup.Stop();
             startup.Dispose();
-            if (!IsDisposed) _ = SyncFollowTargetsAsync(manual: false, forceRefresh: true);
+            if (!IsDisposed) _ = SyncFollowTargetsAsync(manual: false, forceRefresh: false);
         };
         startup.Start();
+    }
+
+    /// <summary>
+    /// 启动时在后台探测全部目标地址候选，让「目标地址」和「目标跟随」下拉
+    /// 打开即有内容。探测包含 WSL、Hyper-V、VMware、VirtualBox、Windows 沙盒、
+    /// 默认网关和 ARP 邻居；全程不阻塞界面。
+    /// </summary>
+    private async Task WarmCandidateHintsAsync()
+    {
+        try
+        {
+            var hints = await GuestHintCache.RefreshNowAsync(force: true);
+            if (IsDisposed) return;
+
+            LogService.Current?.Info($"启动探测目标地址候选完成：{hints.Count} 条。");
+        }
+        catch (Exception ex)
+        {
+            LogService.Current?.Warn($"启动探测目标地址候选失败：{ex.Message}");
+        }
     }
 
     private void OnNetworkAddressChanged(object? sender, EventArgs e)

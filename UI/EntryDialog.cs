@@ -79,7 +79,13 @@ public sealed class EntryDialog : Form
         };
 
         // 句柄创建后控件才有真实宽度，这时再按内容定高一次
-        Shown += (_, _) => ResizePreview();
+        Shown += async (_, _) =>
+        {
+            ResizePreview();
+
+            // 启动预热可能还没跑完；等它结束后补一次候选，避免下拉里只有"不跟随"
+            await RefreshFollowChoicesWhenReadyAsync();
+        };
     }
 
     protected override void OnLoad(EventArgs e)
@@ -165,7 +171,12 @@ public sealed class EntryDialog : Form
         _followBox.DropDownStyle = ComboBoxStyle.DropDownList;
         _followBox.Anchor = AnchorStyles.Left | AnchorStyles.Right;
         _followBox.SelectedIndexChanged += (_, _) => ApplyFollowSelection();
-        _followBox.DropDown += (_, _) => PopulateFollowChoices(includeLiveHints: true);
+        _followBox.DropDown += (_, _) =>
+        {
+            // 启动时已经预热过；过期就顺手在后台刷新，当前先显示快照
+            GuestHintCache.RefreshIfStale();
+            PopulateFollowChoices();
+        };
         _tip.SetToolTip(_followBox,
             "WSL / Hyper-V / VMware / VirtualBox / 沙盒的 IP 变化时自动更新目标地址。" +
             "需要管理员权限写入；虚拟机需处于运行状态才能探测到。");
@@ -347,7 +358,7 @@ public sealed class EntryDialog : Form
     /// 重建"目标跟随"下拉。当前探测到的 WSL / 虚拟机会排在前面；
     /// 已保存但当前探测不到的目标也保留一项，避免编辑离线虚拟机时丢配置。
     /// </summary>
-    private void PopulateFollowChoices(bool includeLiveHints = false)
+    private void PopulateFollowChoices()
     {
         if (_populatingFollow) return;
 
@@ -361,13 +372,11 @@ public sealed class EntryDialog : Form
                 new(null, null, "不跟随（固定 IP）"),
             };
 
-            // 构造对话框时只读缓存，避免 arp.exe 拖慢打开速度；
-            // 展开下拉或点"刷新"时才补上实时邻居探测。
-            var hints = (includeLiveHints
-                    ? GuestHintCache.Snapshot.Concat(NetworkHintService.GetHints())
-                    : GuestHintCache.Snapshot)
+            // 启动时已预热；这里只读缓存，避免展开下拉时被 arp.exe / wsl.exe 阻塞。
+            var hints = GuestHintCache.Snapshot
                 .Where(TargetFollowService.IsFollowable)
-                .GroupBy(h => h.Address, StringComparer.OrdinalIgnoreCase)
+                // 同一台虚拟机可能有多块网卡/多个地址，优先按 MAC 合并成一条
+                .GroupBy(h => h.Mac ?? h.Id ?? h.Address, StringComparer.OrdinalIgnoreCase)
                 .Select(g => g.First())
                 .OrderBy(FollowOrder)   // 稳定排序：保留探测结果内部的主地址顺序
                 .ToList();
@@ -470,7 +479,7 @@ public sealed class EntryDialog : Form
         try
         {
             await GuestHintCache.RefreshNowAsync(force: true);
-            if (!IsDisposed) PopulateFollowChoices(includeLiveHints: true);
+            if (!IsDisposed) PopulateFollowChoices();
         }
         catch (Exception ex)
         {
@@ -480,6 +489,25 @@ public sealed class EntryDialog : Form
         {
             _followRefreshBusy = false;
             if (!IsDisposed) _followRefreshButton.Enabled = true;
+        }
+    }
+
+    /// <summary>
+    /// 窗口显示后等待一次候选刷新（如果启动预热还在跑就复用它），
+    /// 完成后补填下拉。用户正在展开下拉时不打断选择。
+    /// </summary>
+    private async Task RefreshFollowChoicesWhenReadyAsync()
+    {
+        try
+        {
+            await GuestHintCache.RefreshNowAsync(force: false);
+
+            if (IsDisposed || _followBox.DroppedDown) return;
+            PopulateFollowChoices();
+        }
+        catch (Exception ex)
+        {
+            LogService.Current?.Warn($"补充目标跟随候选失败：{ex.Message}");
         }
     }
 
@@ -505,9 +533,9 @@ public sealed class EntryDialog : Form
     }
 
     /// <summary>
-    /// 填充目标地址候选。网关和 ARP 邻居同步取，很快；
-    /// WSL / Hyper-V / 沙盒 / 设备名来自缓存快照。
-    /// 打开下拉时只读当前快照，不启动探测；关闭后才在后台刷新。
+    /// 填充目标地址候选。程序启动时已经在后台预热过完整候选（网关、ARP 邻居、
+    /// WSL、虚拟机、沙盒、设备名），打开下拉只读缓存快照，不启动探测。
+    /// 只有缓存仍为空时（首次启动尚未完成）才同步取一次网关/ARP 兜底。
     /// </summary>
     private void PopulateAddressHints()
     {
@@ -525,29 +553,28 @@ public sealed class EntryDialog : Form
             // 重新选中一项，把编辑框改成整条展示文本。
             _connectAddress.SelectedIndex = -1;
 
-            // 打开下拉只读取当前缓存快照，不在这里启动探测
-            var guestHints = GuestHintCache.Snapshot;
-            var guestIps = new HashSet<string>(
-                guestHints.Select(h => h.Address), StringComparer.OrdinalIgnoreCase);
+            var snapshot = GuestHintCache.Snapshot;
+            var source = snapshot.Count > 0 ? snapshot : NetworkHintService.GetHints();
+
             var sandboxMacs = new HashSet<string>(
-                guestHints
+                source
                     .Where(h => h.Category.Contains("沙盒", StringComparison.Ordinal) && h.Mac is not null)
                     .Select(h => h.Mac!),
                 StringComparer.OrdinalIgnoreCase);
 
             var merged = new List<AddressHint>();
-            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var seenAddresses = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var seenSandboxMacs = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
-            foreach (var hint in guestHints.Concat(NetworkHintService.GetHints()))
+            foreach (var hint in source)
             {
-                // 沙盒同一 MAC 可能出现在多个虚拟交换机上；主地址已在 guestHints，
-                // 其他接口不单独占一行，避免同一设备显示多条。
-                if (!guestIps.Contains(hint.Address)
-                    && hint.Mac is not null
-                    && sandboxMacs.Contains(hint.Mac))
+                // 沙盒同一 MAC 可能出现在多个虚拟交换机上；只保留优先级最高的一条
+                if (hint.Mac is not null
+                    && sandboxMacs.Contains(hint.Mac)
+                    && !seenSandboxMacs.Add(hint.Mac))
                     continue;
 
-                if (seen.Add(hint.Address)) merged.Add(hint);
+                if (seenAddresses.Add(hint.Address)) merged.Add(hint);
             }
 
             _addressHints = merged;
