@@ -150,6 +150,8 @@ exe 位于 `Program Files`、`%SystemRoot%` 等系统保护目录时，视为不
 数据目录里的 JSON 可能位于低权限可写的位置，因此：
 
 - `name` / `group` / `note` 只用于界面展示，**绝不会拼进任何命令行**；
+- `followKind` / `followId` / `followMac` 只用于本地匹配目标；跟随解析出的地址必须能通过
+  `IPAddress.TryParse` 且是 IPv4，才会交给 `PortProxyService`；
 - 防火墙规则名固定用 `{地址}:{端口}` 生成，不使用自由文本；
 - 进入 netsh 命令行的只有经过严格校验的 IP、1–65535 的端口和四个枚举 family 值。
 

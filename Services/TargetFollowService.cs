@@ -334,9 +334,10 @@ public static class TargetFollowService
             try
             {
                 var previous = currentTarget;
+                var oldEntry = current ?? entry;
                 var updated = entry.WithConnection(address, entry.ConnectPort);
 
-                await Task.Run(() => service.Update(entry, updated), cancellationToken)
+                await Task.Run(() => service.Update(oldEntry, updated), cancellationToken)
                     .ConfigureAwait(false);
 
                 LogService.Current?.Info(

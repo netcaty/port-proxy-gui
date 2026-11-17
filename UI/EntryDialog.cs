@@ -85,6 +85,7 @@ public sealed class EntryDialog : Form
     protected override void OnLoad(EventArgs e)
     {
         DpiScale.Apply(this, 560, 596, 480, 540);
+        _followBox.DropDownWidth = DpiScale.Value(this, 420);
         ResizePreview();
         base.OnLoad(e);
     }
@@ -368,8 +369,7 @@ public sealed class EntryDialog : Form
                 .Where(TargetFollowService.IsFollowable)
                 .GroupBy(h => h.Address, StringComparer.OrdinalIgnoreCase)
                 .Select(g => g.First())
-                .OrderBy(FollowOrder)
-                .ThenBy(h => h.Display, StringComparer.CurrentCultureIgnoreCase)
+                .OrderBy(FollowOrder)   // 稳定排序：保留探测结果内部的主地址顺序
                 .ToList();
 
             var matched = false;

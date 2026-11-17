@@ -887,7 +887,7 @@ public sealed class MainForm : Form
             var report = await TargetFollowService.SyncAsync(
                 entries, _service, _elevated, forceRefresh, keys);
 
-            if (IsDisposed) return;
+            if (IsDisposed || Disposing) return;
 
             _followPendingCount = report.NeedsElevationCount;
 
@@ -918,7 +918,7 @@ public sealed class MainForm : Form
 
             UpdateBanner();
 
-            if (manual || report.FailedCount > 0)
+            if (manual)
             {
                 var lines = report.Items
                     .Where(i => i.Status != FollowSyncStatus.UpToDate)
@@ -929,8 +929,7 @@ public sealed class MainForm : Form
                 if (lines.Count == 0) lines.Add("所有跟随目标均无变化。");
 
                 MessageBox.Show(this, string.Join(Environment.NewLine, lines),
-                    manual ? "同步跟随目标" : "跟随失败",
-                    MessageBoxButtons.OK,
+                    "同步跟随目标", MessageBoxButtons.OK,
                     report.FailedCount > 0 ? MessageBoxIcon.Warning : MessageBoxIcon.Information);
             }
         }
@@ -1611,7 +1610,7 @@ public sealed class MainForm : Form
                 // 服务重启 / 端口重建需要一点时间才能看到监听器
                 if (ok) await Task.Delay(1200);
 
-                if (IsDisposed) return;
+                if (IsDisposed || Disposing) return;
 
                 RefreshData();
                 meta = _meta.Get(entry.Key) ?? meta;
