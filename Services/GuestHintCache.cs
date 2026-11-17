@@ -88,10 +88,16 @@ public static class GuestHintCache
         {
             var baseHints = NetworkHintService.GetHints();
 
-            // 网关 / ARP 邻居先发布，避免 WSL / 虚拟机探测较慢时下拉长时间为空
-            Publish(
-                Array.Empty<AddressHint>(), Array.Empty<AddressHint>(),
-                Array.Empty<AddressHint>(), baseHints);
+            // 只有缓存为空（通常是刚启动）时才先发布网关/ARP 邻居，
+            // 避免 WSL / 虚拟机探测较慢时下拉长时间为空。
+            // 已有完整快照时保留旧列表，等本次 local/names 结果出来再整体替换，
+            // 否则每次刷新都会短暂退化成"只有网关 + ARP"。
+            if (Snapshot.Count == 0)
+            {
+                Publish(
+                    Array.Empty<AddressHint>(), Array.Empty<AddressHint>(),
+                    Array.Empty<AddressHint>(), baseHints);
+            }
 
             var localTask = NetworkHintService.IdentifyLocalGuestsAsync(baseHints);
             var wslTask = NetworkHintService.GetWslHintsAsync();

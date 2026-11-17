@@ -592,6 +592,9 @@ public static class NetworkHintService
                 LogService.Current?.Info($"wsb CLI 发现 {ids.Count} 个运行中的沙盒。");
             }
 
+            // 同一批沙盒刚超时过就不要每次都再等一遍；新沙盒 ID 出现时会自动重试
+            if (ShouldSkipSandboxIp(idsText)) return Array.Empty<AddressHint>();
+
             var tasks = ids
                 .Take(8)
                 .Select(id => Task.Run(() => QuerySandboxIp(wsb, id, timeoutMs)))
@@ -606,6 +609,14 @@ public static class NetworkHintService
                 LogService.Current?.Info($"查询沙盒 IP 失败：{ex.Message}");
             }
 
+            var anySuccess = tasks.Any(t =>
+                t.IsCompletedSuccessfully && t.Result.Result is { Ok: true });
+            var allTimedOut = tasks.Count > 0 && tasks.All(t =>
+                t.IsCompletedSuccessfully && t.Result.TimedOut);
+
+            if (anySuccess) ClearSandboxIpBlock();
+            else if (allTimedOut) BlockSandboxIp(idsText);
+
             var localIps = new HashSet<string>(
                 EnumerateLocalNetwork().Adapters.Select(a => a.Address),
                 StringComparer.OrdinalIgnoreCase);
@@ -615,7 +626,7 @@ public static class NetworkHintService
             {
                 if (!task.IsCompletedSuccessfully) continue;
 
-                var (id, result) = task.Result;
+                var (id, result, _) = task.Result;
                 if (result is null || !result.Ok) continue;
 
                 var ips = ExtractIpv4Addresses(result.StdOut)
@@ -647,7 +658,7 @@ public static class NetworkHintService
     }
 
     /// <summary>单个沙盒的 IP 查询；超时就放弃，不影响其他沙盒和兜底逻辑。</summary>
-    private static (string Id, ProcResult? Result) QuerySandboxIp(
+    private static (string Id, ProcResult? Result, bool TimedOut) QuerySandboxIp(
         string wsb,
         string id,
         int timeoutMs)
@@ -655,16 +666,53 @@ public static class NetworkHintService
         var result = RunWsb(
             wsb,
             new[] { "ip", "--id", id, "--raw" },
-            Math.Min(timeoutMs, 8000),
+            Math.Min(timeoutMs, SandboxIpTimeoutMs),
             out var error);
 
         if (result is null)
         {
-            LogService.Current?.Info($"读取沙盒 {id} 的 IP 失败：{error}");
-            return (id, null);
+            var timedOut = error?.Contains("没有结束", StringComparison.Ordinal) == true;
+
+            LogService.Current?.Info(timedOut
+                ? $"wsb ip 查询沙盒 {id} 超时（{SandboxIpTimeoutMs} ms），改用 ARP/Hyper-V 兜底。"
+                : $"读取沙盒 {id} 的 IP 失败：{error}");
+
+            return (id, null, timedOut);
         }
 
-        return (id, result);
+        return (id, result, false);
+    }
+
+    private static bool ShouldSkipSandboxIp(string idsText)
+    {
+        lock (SandboxIpGate)
+        {
+            return _sandboxIpBlockedIds is not null
+                   && string.Equals(_sandboxIpBlockedIds, idsText, StringComparison.OrdinalIgnoreCase)
+                   && DateTime.UtcNow - _sandboxIpBlockedAtUtc < SandboxIpBlockedTtl;
+        }
+    }
+
+    private static void BlockSandboxIp(string idsText)
+    {
+        lock (SandboxIpGate)
+        {
+            _sandboxIpBlockedIds = idsText;
+            _sandboxIpBlockedAtUtc = DateTime.UtcNow;
+        }
+
+        LogService.Current?.Info(
+            $"wsb ip 连续超时，改用 ARP/Hyper-V 兜底；" +
+            $"{SandboxIpBlockedTtl.TotalMinutes:0} 分钟内不再重试。");
+    }
+
+    private static void ClearSandboxIpBlock()
+    {
+        lock (SandboxIpGate)
+        {
+            _sandboxIpBlockedIds = null;
+            _sandboxIpBlockedAtUtc = DateTime.MinValue;
+        }
     }
 
     /// <summary>
@@ -1252,6 +1300,14 @@ public static class NetworkHintService
     private static DateTime _sandboxCliAtUtc = DateTime.MinValue;
     private static readonly TimeSpan SandboxCliTtl = TimeSpan.FromMinutes(10);
     private static string? _lastWsbIds;
+
+    // wsb ip 在部分 Windows 版本上会一直挂住（实测 20 秒以上不返回），
+    // 超时一次后就临时跳过，直接用 ARP / Hyper-V 兜底，避免每次刷新都等它。
+    private static readonly object SandboxIpGate = new();
+    private static string? _sandboxIpBlockedIds;
+    private static DateTime _sandboxIpBlockedAtUtc = DateTime.MinValue;
+    private static readonly TimeSpan SandboxIpBlockedTtl = TimeSpan.FromMinutes(5);
+    private const int SandboxIpTimeoutMs = 1500;
 
     /// <summary>
     /// 找 Windows 沙盒 CLI。优先直接运行包内 wsb.exe：
