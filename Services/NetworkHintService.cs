@@ -461,49 +461,56 @@ public static class NetworkHintService
             vmHints.Select(h => NormalizeMac(h.Mac)).OfType<string>(),
             StringComparer.OrdinalIgnoreCase);
 
-        // 第一轮：Default Switch 上未被 Hyper-V 虚拟机认领的微软 OUI 邻居
-        var sandboxMacs = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        // 以 Default Switch 上未被 Hyper-V 虚拟机认领的微软 OUI 邻居为锚点
+        var anchors = baseHints
+            .Where(h => h.Mac is not null
+                && !claimedIps.Contains(h.Address)
+                && !claimedMacs.Contains(h.Mac)
+                && LooksLikeDefaultSwitch(h)
+                && MacVendor(h.Mac) == "微软虚拟网卡")
+            .GroupBy(h => h.Mac!, StringComparer.OrdinalIgnoreCase)
+            .Select(g => g.First())
+            .ToList();
 
-        foreach (var hint in baseHints)
+        foreach (var anchor in anchors)
         {
-            if (hint.Mac is null) continue;
-            if (claimedIps.Contains(hint.Address)) continue;
-            if (claimedMacs.Contains(hint.Mac)) continue;
-            if (!LooksLikeDefaultSwitch(hint)) continue;
-            if (MacVendor(hint.Mac) != "微软虚拟网卡") continue;
+            var mac = anchor.Mac!;
 
-            sandboxMacs.Add(hint.Mac);
+            // 沙盒可能有多块虚拟网卡（Default Switch / MyApps vSwitch 等），
+            // 同一 MAC 合并成一条，优先保留 Default Switch 地址。
+            var group = baseHints
+                .Where(h => h.Mac is not null
+                    && string.Equals(h.Mac, mac, StringComparison.OrdinalIgnoreCase)
+                    && !claimedIps.Contains(h.Address))
+                .OrderBy(h => LooksLikeDefaultSwitch(h) ? 0 : 1)
+                .ThenBy(h => h.Address, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+            var primary = group.FirstOrDefault(LooksLikeDefaultSwitch) ?? group[0];
+
+            var alternates = group
+                .Where(h => !string.Equals(h.Address, primary.Address, StringComparison.OrdinalIgnoreCase))
+                .GroupBy(h => h.Address, StringComparer.OrdinalIgnoreCase)
+                .Select(g => g.First())
+                .Take(2)
+                .ToList();
 
             var detailParts = new List<string>();
-            if (sandboxName is not null && hint.Source is not null) detailParts.Add(hint.Source);
+            if (sandboxName is not null && primary.Source is not null)
+                detailParts.Add(primary.Source);
             detailParts.Add("WSB 正在运行");
 
-            identified.Add(hint with
+            if (alternates.Count > 0)
+            {
+                var altText = string.Join("、", alternates.Select(a =>
+                    a.Source is null ? a.Address : $"{a.Address}（{a.Source}）"));
+                detailParts.Add($"另有 {altText}");
+            }
+
+            identified.Add(primary with
             {
                 Category = "疑似 Windows 沙盒",
-                Source = sandboxName ?? hint.Source,
-                Detail = string.Join(" · ", detailParts),
-            });
-        }
-
-        // 第二轮：同一个 MAC 还出现在别的虚拟交换机上，说明是同一台沙盒设备
-        foreach (var hint in baseHints)
-        {
-            if (hint.Mac is null || !sandboxMacs.Contains(hint.Mac)) continue;
-            if (claimedIps.Contains(hint.Address)) continue;
-            if (LooksLikeDefaultSwitch(hint)) continue;
-            if (!hint.Category.Contains("Hyper-V", StringComparison.Ordinal)
-                && !hint.Category.Contains("沙盒", StringComparison.Ordinal))
-                continue;
-
-            var detailParts = new List<string>();
-            if (sandboxName is not null && hint.Source is not null) detailParts.Add(hint.Source);
-            detailParts.Add("与 Default Switch 同一设备");
-
-            identified.Add(hint with
-            {
-                Category = "疑似 Windows 沙盒",
-                Source = sandboxName ?? hint.Source,
+                Source = sandboxName ?? primary.Source,
                 Detail = string.Join(" · ", detailParts),
             });
         }
@@ -601,7 +608,9 @@ public static class NetworkHintService
         return hint.Category.Contains("沙盒", StringComparison.Ordinal);
     }
 
-    /// <summary>WSL 客户机地址。会启动默认发行版，因此单独异步调用并带超时。</summary>
+    /// <summary>
+    /// WSL 客户机地址。只查询已在运行的发行版，不会为了探测而启动 WSL。
+    /// </summary>
     public static async Task<IReadOnlyList<AddressHint>> GetWslHintsAsync(int timeoutMs = 12000)
     {
         var wsl = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "wsl.exe");
@@ -611,16 +620,33 @@ public static class NetworkHintService
         {
             var result = await Task.Run(() =>
             {
-                // hostname -I 的 stdout 是 Linux 命令原始输出（ASCII/UTF-8）；
-                // wsl -l 的列表则是 UTF-16LE，需要分开解码。
-                var ipResult = ProcRunner.Run(wsl, new[] { "hostname", "-I" }, timeoutMs);
+                // 先查正在运行的发行版；-l --running 不会启动任何发行版。
+                // wsl -l 的列表是 UTF-16LE。
                 var listResult = ProcRunner.Run(
                     wsl, new[] { "-l", "--running", "-q" }, Math.Min(timeoutMs, 3000),
                     ProcTextEncoding.Utf16);
-                return (Ip: ipResult, Names: listResult);
+                var distros = ParseWslDistros(listResult);
+                if (distros.Count == 0)
+                    return (Ip: (ProcResult?)null, Distros: distros);
+
+                // 指定已运行的发行版执行 hostname -I，避免把默认发行版拉起来。
+                // hostname -I 的 stdout 是 Linux 命令原始输出（ASCII/UTF-8）。
+                ProcResult? ipResult = null;
+                foreach (var distro in distros)
+                {
+                    var probe = ProcRunner.Run(
+                        wsl, new[] { "-d", distro, "hostname", "-I" }, timeoutMs);
+                    if (probe.Ok)
+                    {
+                        ipResult = probe;
+                        break;
+                    }
+                }
+
+                return (Ip: ipResult, Distros: distros);
             }).ConfigureAwait(false);
 
-            if (!result.Ip.Ok) return Array.Empty<AddressHint>();
+            if (result.Ip is null || !result.Ip.Ok) return Array.Empty<AddressHint>();
 
             var localNetwork = EnumerateLocalNetwork();
             var localIps = new HashSet<string>(
@@ -632,8 +658,7 @@ public static class NetworkHintService
                 .Where(ip => !localIps.Contains(ip))
                 .ToList();
 
-            var distros = ParseWslDistros(result.Names);
-            var distroLabel = FormatDistroNames(distros);
+            var distroLabel = FormatDistroNames(result.Distros);
 
             // 镜像网络（networkingMode=mirrored）下 WSL 与宿主机共用网络命名空间，
             // hostname -I 返回的是宿主机地址，不能当成 WSL 虚拟机的独立 IP。

@@ -352,12 +352,28 @@ public sealed class EntryDialog : Form
 
             // 打开下拉只读取当前缓存快照，不在这里启动探测
             var guestHints = GuestHintCache.Snapshot;
+            var guestIps = new HashSet<string>(
+                guestHints.Select(h => h.Address), StringComparer.OrdinalIgnoreCase);
+            var sandboxMacs = new HashSet<string>(
+                guestHints
+                    .Where(h => h.Category.Contains("沙盒", StringComparison.Ordinal) && h.Mac is not null)
+                    .Select(h => h.Mac!),
+                StringComparer.OrdinalIgnoreCase);
 
             var merged = new List<AddressHint>();
             var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
             foreach (var hint in guestHints.Concat(NetworkHintService.GetHints()))
+            {
+                // 沙盒同一 MAC 可能出现在多个虚拟交换机上；主地址已在 guestHints，
+                // 其他接口不单独占一行，避免同一设备显示多条。
+                if (!guestIps.Contains(hint.Address)
+                    && hint.Mac is not null
+                    && sandboxMacs.Contains(hint.Mac))
+                    continue;
+
                 if (seen.Add(hint.Address)) merged.Add(hint);
+            }
 
             _addressHints = merged;
 
