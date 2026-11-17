@@ -141,9 +141,21 @@ internal static class Program
             }
 
             CrashLogger.Initialize(paths.LogDir);
+
+            var exePath = AutorunService.ExecutablePath;
+            string built;
+            try
+            {
+                built = File.GetLastWriteTime(exePath).ToString("yyyy-MM-dd HH:mm");
+            }
+            catch
+            {
+                built = "?";
+            }
+
             new LogService(paths.LogDir).Info(
-                $"启动 data-dir={paths.DataDir} ({paths.SourceLabel}) exe={AutorunService.ExecutablePath} " +
-                $"elevated={elevated}");
+                $"启动 data-dir={paths.DataDir} ({paths.SourceLabel}) exe={exePath} " +
+                $"built={built} elevated={elevated}");
 
             if (paths.FallbackReason is not null)
                 LogService.Current?.Warn($"数据目录已从 exe 同目录降级：{paths.FallbackReason}");

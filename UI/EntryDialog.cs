@@ -17,8 +17,8 @@ public sealed class EntryDialog : Form
     private readonly ComboBox _connectAddress = new();
     private readonly ToolTip _tip = new();
     private List<AddressHint> _addressHints = new();
-    private List<AddressHint> _wslHints = new();
-    private bool _wslProbed;
+    private List<AddressHint> _guestHints = new();
+    private readonly System.Windows.Forms.Timer _guestRefreshTimer = new() { Interval = 30_000 };
     private bool _populatingHints;
     private readonly NumericUpDown _connectPort = new();
     private readonly TextBox _nameBox = new();
@@ -53,6 +53,10 @@ public sealed class EntryDialog : Form
         BuildUi();
         LoadValues();
         UpdatePreview();
+
+        _guestHints = GuestHintCache.Snapshot.ToList();
+        GuestHintCache.Updated += OnGuestHintsUpdated;
+        _guestRefreshTimer.Tick += (_, _) => GuestHintCache.RefreshIfStale();
 
         // 句柄创建后控件才有真实宽度，这时再按内容定高一次
         Shown += (_, _) => ResizePreview();
@@ -123,7 +127,8 @@ public sealed class EntryDialog : Form
         _connectAddress.DropDown += (_, _) => PopulateAddressHints();
         _connectAddress.SelectedIndexChanged += (_, _) => ApplySelectedHint();
         _tip.SetToolTip(_connectAddress,
-            "可直接输入 IP；下拉里是本机网卡、默认网关、虚拟网卡、WSL 客户机与 ARP 邻居缓存");
+            "可直接输入 IP；下拉列出默认网关、WSL、Hyper-V/沙盒(WSB)/VMware 虚拟机与局域网设备，" +
+            "能解析到名称的会显示设备名；结果缓存并定期刷新");
         _connectPort.Minimum = 1;
         _connectPort.Maximum = 65535;
         _connectPort.Value = 80;
@@ -317,8 +322,9 @@ public sealed class EntryDialog : Form
     }
 
     /// <summary>
-    /// 填充目标地址候选。本机网卡/网关/虚拟网卡/邻居缓存是同步取的（很快），
-    /// WSL 客户机地址需要启动 wsl.exe，单独异步探测，回来后补进列表。
+    /// 填充目标地址候选。网关和 ARP 邻居同步取，很快；
+    /// WSL / Hyper-V / 沙盒 / 设备名来自带 TTL 的后台缓存，
+    /// 下拉打开时先显示缓存，过期再在后台刷新。
     /// </summary>
     private void PopulateAddressHints()
     {
@@ -329,10 +335,13 @@ public sealed class EntryDialog : Form
         {
             var current = _connectAddress.Text;
 
+            // 事件可能因为窗口未就绪没有落到 UI，这里每次都以缓存快照为准
+            _guestHints = GuestHintCache.Snapshot.ToList();
+
             var merged = new List<AddressHint>();
             var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
-            foreach (var hint in _wslHints.Concat(NetworkHintService.GetHints()))
+            foreach (var hint in _guestHints.Concat(NetworkHintService.GetHints()))
                 if (seen.Add(hint.Address)) merged.Add(hint);
 
             _addressHints = merged;
@@ -343,6 +352,8 @@ public sealed class EntryDialog : Form
             _connectAddress.EndUpdate();
 
             if (current.Length > 0) _connectAddress.Text = current;
+
+            ResizeAddressDropDown(merged);
         }
         catch (Exception ex)
         {
@@ -353,33 +364,76 @@ public sealed class EntryDialog : Form
             _populatingHints = false;
         }
 
-        if (!_wslProbed)
+        if (!_guestRefreshTimer.Enabled) _guestRefreshTimer.Start();
+        GuestHintCache.RefreshIfStale();
+    }
+
+    private void OnGuestHintsUpdated()
+    {
+        if (IsDisposed) return;
+
+        if (InvokeRequired)
         {
-            _wslProbed = true;
-            _ = ProbeWslAsync();
+            try
+            {
+                BeginInvoke(new Action(OnGuestHintsUpdated));
+            }
+            catch
+            {
+                // 窗口正在关闭
+            }
+            return;
+        }
+
+        if (IsDisposed) return;
+
+        var snapshot = GuestHintCache.Snapshot;
+        if (_guestHints.Select(h => h.Display)
+            .SequenceEqual(snapshot.Select(h => h.Display), StringComparer.Ordinal))
+            return;
+
+        _guestHints = snapshot.ToList();
+
+        // 下拉还开着就把新条目补进去
+        if (_connectAddress.DroppedDown)
+        {
+            _connectAddress.DroppedDown = false;
+            PopulateAddressHints();
+            _connectAddress.DroppedDown = true;
         }
     }
 
-    private async Task ProbeWslAsync()
+    /// <summary>按最长一条的内容加宽下拉，否则设备名 / 虚拟机名会被截断。</summary>
+    private void ResizeAddressDropDown(IReadOnlyList<AddressHint> hints)
     {
         try
         {
-            var hints = await NetworkHintService.GetWslHintsAsync().ConfigureAwait(true);
-            if (IsDisposed || hints.Count == 0) return;
+            if (!_connectAddress.IsHandleCreated) return;
 
-            _wslHints = hints.ToList();
+            var width = _connectAddress.Width;
+            using var graphics = _connectAddress.CreateGraphics();
 
-            // 下拉还开着就把新条目补进去
-            if (_connectAddress.DroppedDown)
+            foreach (var hint in hints)
             {
-                _connectAddress.DroppedDown = false;
-                PopulateAddressHints();
-                _connectAddress.DroppedDown = true;
+                var measured = TextRenderer.MeasureText(
+                    graphics,
+                    hint.Display,
+                    _connectAddress.Font,
+                    new Size(2000, 24),
+                    TextFormatFlags.SingleLine | TextFormatFlags.NoPrefix);
+
+                width = Math.Max(width, measured.Width + SystemInformation.VerticalScrollBarWidth + 16);
             }
+
+            var maxWidth = (int)Math.Round(780 * DeviceDpi / 96.0);
+            var workingWidth = Screen.FromControl(_connectAddress).WorkingArea.Width - 48;
+            maxWidth = Math.Max(_connectAddress.Width, Math.Min(maxWidth, workingWidth));
+
+            _connectAddress.DropDownWidth = Math.Clamp(width, _connectAddress.Width, maxWidth);
         }
         catch (Exception ex)
         {
-            LogService.Current?.Warn($"WSL 地址探测失败：{ex.Message}");
+            LogService.Current?.Warn($"调整地址下拉宽度失败：{ex.Message}");
         }
     }
 
@@ -533,7 +587,13 @@ public sealed class EntryDialog : Form
 
     protected override void Dispose(bool disposing)
     {
-        if (disposing) _tip.Dispose();
+        if (disposing)
+        {
+            GuestHintCache.Updated -= OnGuestHintsUpdated;
+            _guestRefreshTimer.Stop();
+            _guestRefreshTimer.Dispose();
+            _tip.Dispose();
+        }
         base.Dispose(disposing);
     }
 
