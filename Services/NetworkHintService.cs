@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Net;
 using System.Net.NetworkInformation;
 using System.Net.Sockets;
+using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 
@@ -50,8 +51,9 @@ public sealed record AddressHint(
 /// 并在查不到设备名 / 虚拟机名时作为 id 兜底。
 /// 有管理员权限时再问 Hyper-V（Get-VMNetworkAdapter）换出虚拟机名称，
 /// WSL 的客户机 IP 只能问 wsl.exe（宿主机看不到）。
-/// 新版 Windows 沙盒自带 wsb CLI，用 `wsb list` 确认沙盒正在运行；
-/// `wsb ip` 在部分版本会永久挂起，IP 统一走 ARP + Hyper-V 启发式兜底。
+/// 新版 Windows 沙盒自带 wsb CLI：`wsb list` 确认沙盒正在运行，
+/// `wsb exec` 在沙盒内执行 PowerShell 直接报出 IP，不读宿主机 ARP 表
+/// （重启后 Default Switch 会同时残留旧/新永久邻居）。
 /// </summary>
 public static class NetworkHintService
 {
@@ -433,9 +435,8 @@ public static class NetworkHintService
         var vmTask = ProbeHyperVAsync(baseHints, Math.Min(timeoutMs, 8000));
         var vmCliTask = ProbeVmNamesAsync(baseHints, Math.Min(timeoutMs, 8000));
 
-        // wsb ip 在部分 Windows 版本上会永久挂起（实测 20s+），已停用。
-        // wsb list 只用来确认是否有运行中的沙盒，IP 始终走 ARP/Hyper-V 兜底。
-        var wsbTask = DetectRunningSandboxAsync(4000);
+        // wsb list 确认沙盒运行，wsb exec 从沙盒内部直接报 IP，不依赖 ARP 表
+        var wsbTask = DetectRunningSandboxAsync(timeoutMs);
 
         var sandboxRunning = IsWindowsSandboxRunning();
         var sandboxNameTask = sandboxRunning
@@ -452,7 +453,24 @@ public static class NetworkHintService
         }
 
         var sandboxName = sandboxNameTask.IsCompletedSuccessfully ? sandboxNameTask.Result : null;
+        var wsbProbe = wsbTask.IsCompletedSuccessfully
+            ? wsbTask.Result
+            : new SandboxProbe(false, Array.Empty<string>());
+        var wsbHintCount = wsbProbe.Ips.Count;
         var identified = new List<AddressHint>();
+
+        // 沙盒 IP 由沙盒内部通过 wsb exec 报出，优先使用，避免 ARP 残留
+        foreach (var ip in wsbProbe.Ips)
+        {
+            identified.Add(new AddressHint(
+                ip,
+                "Windows 沙盒",
+                sandboxName,
+                "wsb exec",
+                Kind: "wsb",
+                Id: sandboxName ?? "WindowsSandbox",
+                Confirmed: true));
+        }
 
         // VMware / VirtualBox 的 CLI 结果给出确切虚拟机名
         if (vmCliTask.IsCompletedSuccessfully) identified.AddRange(vmCliTask.Result);
@@ -461,6 +479,9 @@ public static class NetworkHintService
         {
             foreach (var hint in vmTask.Result)
             {
+                // 沙盒 IP 已由 wsb exec 给出时，忽略 Hyper-V 里同沙盒的旧地址
+                if (wsbHintCount > 0 && hint.Kind == "wsb") continue;
+
                 // Hyper-V 里名为 Sandbox 的虚拟机由沙盒进程配置，补上 .wsb 文件名
                 identified.Add(hint.Kind == "wsb" && !string.IsNullOrWhiteSpace(sandboxName)
                     ? hint with { Id = sandboxName }
@@ -468,9 +489,9 @@ public static class NetworkHintService
             }
         }
 
-        // wsb list 的检测和进程启发式任一命中，就走 ARP/Hyper-V 兜底
-        var wsbDetected = wsbTask.IsCompletedSuccessfully && wsbTask.Result;
-        if (sandboxRunning || wsbDetected)
+        // 只有老版本没有 wsb CLI 时才回退到 ARP / Hyper-V 启发式；
+        // 有 CLI 但 exec 拿不到 IP 时不使用不可靠的 ARP 残留。
+        if (!wsbProbe.CliAvailable && sandboxRunning)
         {
             AddSandboxHints(baseHints, vmTask, sandboxName, identified);
         }
@@ -582,10 +603,19 @@ public static class NetworkHintService
     /// `wsb ip` 在部分 Windows 版本上会永久挂起（实测 20s+），已停用，
     /// 沙盒 IP 统一由 ARP + Hyper-V 启发式兜底。
     /// </summary>
-    private static async Task<bool> DetectRunningSandboxAsync(int timeoutMs)
+    private sealed record SandboxProbe(
+        bool CliAvailable,
+        IReadOnlyList<string> Ips);
+
+    /// <summary>
+    /// 新版 Windows 沙盒 CLI：`wsb list` 确认沙盒正在运行，`wsb exec` 在沙盒内
+    /// 执行 PowerShell，把 IPv4 编码进退出码带出来。IP 由沙盒内部报告，
+    /// 不读宿主机 ARP 表——重启后 Default Switch 会同时残留旧/新永久邻居。
+    /// </summary>
+    private static async Task<SandboxProbe> DetectRunningSandboxAsync(int timeoutMs)
     {
         var wsb = FindWindowsSandboxCli();
-        if (wsb is null) return false;
+        if (wsb is null) return new SandboxProbe(false, Array.Empty<string>());
 
         try
         {
@@ -598,25 +628,89 @@ public static class NetworkHintService
                 return result;
             }).ConfigureAwait(false);
 
-            if (list is null || !list.Ok) return false;
+            if (list is null || !list.Ok)
+                return new SandboxProbe(true, Array.Empty<string>());
 
             var ids = ParseSandboxIds(list.StdOut);
-            if (ids.Count == 0) return false;
+            if (ids.Count == 0)
+                return new SandboxProbe(true, Array.Empty<string>());
 
             var idsText = string.Join(",", ids);
             if (!string.Equals(_lastWsbIds, idsText, StringComparison.OrdinalIgnoreCase))
             {
                 _lastWsbIds = idsText;
-                LogService.Current?.Info(
-                    $"wsb CLI 发现 {ids.Count} 个运行中的沙盒；wsb ip 已停用，IP 走 ARP/Hyper-V 兜底。");
+                LogService.Current?.Info($"wsb CLI 发现 {ids.Count} 个运行中的沙盒。");
             }
 
-            return true;
+            var ipTasks = ids
+                .Take(4)
+                .Select(id => Task.Run(() => GetSandboxIpViaExec(wsb, id, timeoutMs)))
+                .ToList();
+            await Task.WhenAll(ipTasks).ConfigureAwait(false);
+
+            var ips = ipTasks
+                .Where(t => t.IsCompletedSuccessfully && t.Result is not null)
+                .Select(t => t.Result!)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+            if (ips.Count > 0)
+                LogService.Current?.Info($"沙盒 IP（wsb exec）：{string.Join("、", ips)}");
+
+            return new SandboxProbe(true, ips);
         }
         catch (Exception ex)
         {
-            LogService.Current?.Info($"wsb list 跳过：{ex.Message}");
-            return false;
+            LogService.Current?.Info($"wsb CLI 探测跳过：{ex.Message}");
+            return new SandboxProbe(true, Array.Empty<string>());
+        }
+    }
+
+    /// <summary>
+    /// 在沙盒内执行 PowerShell，取第一个非回环 IPv4，把地址按小端序编码成
+    /// 32 位整数作为进程退出码返回。`wsb exec --raw` 会给出这个退出码。
+    /// </summary>
+    private static string? GetSandboxIpViaExec(string wsb, string id, int timeoutMs)
+    {
+        const string powershell = @"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe";
+        const string script = """
+            $ip=(Get-NetIPAddress -AddressFamily IPv4 | Where-Object {
+                $_.IPAddress -notlike '127.*' -and $_.IPAddress -notlike '169.254.*'
+            } | Select-Object -First 1).IPAddress
+            if (-not $ip) { exit 0 }
+            exit ([BitConverter]::ToInt32([Net.IPAddress]::Parse($ip).GetAddressBytes(),0))
+            """;
+
+        var encoded = Convert.ToBase64String(Encoding.Unicode.GetBytes(script));
+        var command = $"{powershell} -NoProfile -EncodedCommand {encoded}";
+
+        var result = RunWsb(
+            wsb,
+            new[] { "exec", "--id", id, "-c", command, "-r", "System", "--raw" },
+            Math.Min(timeoutMs, 8000),
+            out var error);
+
+        if (result is null || !result.Ok)
+        {
+            LogService.Current?.Info(
+                $"读取沙盒 {id} 的 IP 失败：{error ?? result?.Combined}");
+            return null;
+        }
+
+        try
+        {
+            using var doc = JsonDocument.Parse(result.StdOut.Trim());
+            if (!doc.RootElement.TryGetProperty("ExitCode", out var value)
+                || value.ValueKind != JsonValueKind.Number)
+                return null;
+
+            var ip = new IPAddress(BitConverter.GetBytes(value.GetInt32()));
+            return IsUseless(ip) ? null : ip.ToString();
+        }
+        catch (Exception ex)
+        {
+            LogService.Current?.Info($"解析沙盒 {id} 的 IP 失败：{ex.Message}");
+            return null;
         }
     }
 
