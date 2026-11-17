@@ -14,6 +14,12 @@ public sealed class AppSettings
     public string LastGroup { get; set; } = string.Empty;
     public string LastFilter { get; set; } = string.Empty;
     public Dictionary<string, int> ColumnWidths { get; set; } = new();
+
+    /// <summary>自动快照最多保留份数；0 表示不按份数限制。</summary>
+    public int BackupKeepCount { get; set; } = 50;
+
+    /// <summary>自动快照最长保留天数；0 表示不按时间限制。</summary>
+    public int BackupKeepDays { get; set; } = 30;
 }
 
 public sealed class SettingsStore

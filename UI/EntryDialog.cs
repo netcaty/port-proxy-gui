@@ -26,6 +26,11 @@ public sealed class EntryDialog : Form
     private readonly System.Windows.Forms.Timer _guestRefreshTimer = new() { Interval = 30_000 };
     private bool _populatingHints;
     private readonly NumericUpDown _connectPort = new();
+    private readonly ComboBox _followBox = new();
+    private readonly Button _followRefreshButton = new();
+    private bool _populatingFollow;
+    private bool _followRefreshBusy;
+    private FollowTarget? _initialFollowTarget;
     private readonly TextBox _nameBox = new();
     private readonly ComboBox _groupBox = new();
     private readonly TextBox _noteBox = new();
@@ -33,6 +38,12 @@ public sealed class EntryDialog : Form
     private readonly TextBox _preview = new();
     private readonly Label _errorLabel = new();
     private readonly Label _testResult = new();
+
+    private sealed record FollowChoice(
+        FollowTarget? Target, AddressHint? Hint, string Display, bool IsCurrentMatch = false)
+    {
+        public override string ToString() => Display;
+    }
 
     [System.ComponentModel.DesignerSerializationVisibility(System.ComponentModel.DesignerSerializationVisibility.Hidden)]
     public PortProxyEntry? Result { get; private set; }
@@ -57,7 +68,9 @@ public sealed class EntryDialog : Form
 
         BuildUi();
         LoadValues();
+        PopulateFollowChoices();
         UpdatePreview();
+        GuestHintCache.RefreshIfStale();
 
         _guestRefreshTimer.Tick += (_, _) =>
         {
@@ -71,7 +84,7 @@ public sealed class EntryDialog : Form
 
     protected override void OnLoad(EventArgs e)
     {
-        DpiScale.Apply(this, 560, 556, 480, 500);
+        DpiScale.Apply(this, 560, 596, 480, 540);
         ResizePreview();
         base.OnLoad(e);
     }
@@ -146,6 +159,26 @@ public sealed class EntryDialog : Form
         _connectPort.ValueChanged += (_, _) => UpdatePreview();
         _connectPort.TextChanged += (_, _) => UpdatePreview();
         AddRow(table, "目标地址", _connectAddress, control2: _connectPort);
+
+        // 目标跟随（WSL / 虚拟机 IP 变化时自动更新目标地址）
+        _followBox.DropDownStyle = ComboBoxStyle.DropDownList;
+        _followBox.Anchor = AnchorStyles.Left | AnchorStyles.Right;
+        _followBox.SelectedIndexChanged += (_, _) => ApplyFollowSelection();
+        _followBox.DropDown += (_, _) => PopulateFollowChoices(includeLiveHints: true);
+        _tip.SetToolTip(_followBox,
+            "WSL / Hyper-V / VMware / VirtualBox / 沙盒的 IP 变化时自动更新目标地址。" +
+            "需要管理员权限写入；虚拟机需处于运行状态才能探测到。");
+
+        _followRefreshButton.Text = "刷新";
+        _followRefreshButton.AutoSize = false;
+        _followRefreshButton.FlatStyle = FlatStyle.System;
+        _followRefreshButton.Width = 96;
+        _followRefreshButton.Height = 26;
+        _followRefreshButton.Anchor = AnchorStyles.Right;
+        _followRefreshButton.Click += async (_, _) => await RefreshFollowChoicesAsync();
+        _tip.SetToolTip(_followRefreshButton, "立即重新探测 WSL / 虚拟机地址");
+
+        AddRow(table, "目标跟随", _followBox, control2: _followRefreshButton);
 
         // 连通性测试
         var testButton = new Button
@@ -305,6 +338,138 @@ public sealed class EntryDialog : Form
             _groupBox.Text = _existingMeta.Group ?? string.Empty;
             _noteBox.Text = _existingMeta.Note ?? string.Empty;
             _firewallBox.Checked = _existingMeta.HasFirewallRule;
+            _initialFollowTarget = FollowTarget.FromMeta(_existingMeta);
+        }
+    }
+
+    /// <summary>
+    /// 重建"目标跟随"下拉。当前探测到的 WSL / 虚拟机会排在前面；
+    /// 已保存但当前探测不到的目标也保留一项，避免编辑离线虚拟机时丢配置。
+    /// </summary>
+    private void PopulateFollowChoices(bool includeLiveHints = false)
+    {
+        if (_populatingFollow) return;
+
+        _populatingFollow = true;
+        try
+        {
+            var previous = CurrentFollowTarget();
+
+            var choices = new List<FollowChoice>
+            {
+                new(null, null, "不跟随（固定 IP）"),
+            };
+
+            // 构造对话框时只读缓存，避免 arp.exe 拖慢打开速度；
+            // 展开下拉或点"刷新"时才补上实时邻居探测。
+            var hints = (includeLiveHints
+                    ? GuestHintCache.Snapshot.Concat(NetworkHintService.GetHints())
+                    : GuestHintCache.Snapshot)
+                .Where(TargetFollowService.IsFollowable)
+                .GroupBy(h => h.Address, StringComparer.OrdinalIgnoreCase)
+                .Select(g => g.First())
+                .OrderBy(FollowOrder)
+                .ThenBy(h => h.Display, StringComparer.CurrentCultureIgnoreCase)
+                .ToList();
+
+            var matched = false;
+
+            foreach (var hint in hints)
+            {
+                var target = TargetFollowService.FromHint(hint);
+                if (target is null) continue;
+
+                var current = previous is not null && TargetFollowService.Matches(hint, previous);
+                matched |= current;
+
+                choices.Add(new FollowChoice(
+                    target, hint, $"{target.Display} → {hint.Address}", current));
+            }
+
+            if (previous is not null && !matched)
+            {
+                choices.Add(new FollowChoice(
+                    previous, null, $"{previous.Display}（当前未检测到，保留原地址）", true));
+            }
+
+            _followBox.BeginUpdate();
+            _followBox.Items.Clear();
+            foreach (var choice in choices) _followBox.Items.Add(choice);
+            _followBox.EndUpdate();
+
+            _followBox.SelectedItem = choices.FirstOrDefault(c => c.IsCurrentMatch) ?? choices[0];
+        }
+        catch (Exception ex)
+        {
+            LogService.Current?.Warn($"填充跟随目标失败：{ex.Message}");
+        }
+        finally
+        {
+            _populatingFollow = false;
+        }
+
+        // SelectedIndexChanged 被 _populatingFollow 守卫拦住了，这里补一次启用状态
+        ApplyFollowSelectionCore();
+    }
+
+    private static int FollowOrder(AddressHint hint) => hint.Kind switch
+    {
+        "wsl" => 0,
+        "hyperv" => 1,
+        "wsb" => 2,
+        _ => 3,
+    };
+
+    private FollowTarget? CurrentFollowTarget()
+    {
+        // 已选中"不跟随"时不能再回退到 _initialFollowTarget，否则重新打开下拉会复活旧跟随
+        if (_followBox.SelectedItem is FollowChoice choice) return choice.Target;
+        return _initialFollowTarget;
+    }
+
+    private void ApplyFollowSelection()
+    {
+        if (_populatingFollow) return;
+        ApplyFollowSelectionCore();
+    }
+
+    private void ApplyFollowSelectionCore()
+    {
+        var choice = _followBox.SelectedItem as FollowChoice;
+
+        if (choice?.Target is null)
+        {
+            _connectAddress.Enabled = true;
+            return;
+        }
+
+        if (choice.Hint?.Address is { Length: > 0 } address)
+            SetConnectAddress(address);
+
+        // 跟随状态下地址由探测结果决定，避免手改后与跟随规则打架
+        _connectAddress.Enabled = false;
+    }
+
+    private async Task RefreshFollowChoicesAsync()
+    {
+        if (_followRefreshBusy) return;
+
+        _followRefreshBusy = true;
+        _followRefreshButton.Enabled = false;
+
+        try
+        {
+            await GuestHintCache.RefreshNowAsync(force: true);
+            if (!IsDisposed) PopulateFollowChoices(includeLiveHints: true);
+        }
+        catch (Exception ex)
+        {
+            LogService.Current?.Warn($"刷新跟随目标失败：{ex.Message}");
+        }
+        finally
+        {
+            _followRefreshBusy = false;
+            if (!IsDisposed) _followRefreshButton.Enabled = true;
         }
     }
 
@@ -503,8 +668,9 @@ public sealed class EntryDialog : Form
     }
 
     /// <summary>
-    /// 把编辑框从"IP · 说明（来源）"整条展示文本恢复成纯 IP。
-    /// 用户自己改了别的内容时不覆盖；consume 表示这次是最终收尾。
+    /// 把编辑框从整条展示文本恢复成纯 IP。支持新格式 "IP - type:id"
+    /// 和旧格式 "IP · 说明（来源）"。用户自己改了别的内容时不覆盖；
+    /// consume 表示这次是最终收尾。
     /// </summary>
     private void NormalizeCommittedSelectionCore(bool consume)
     {
@@ -533,15 +699,20 @@ public sealed class EntryDialog : Form
     }
 
     /// <summary>
-    /// 兼容旧状态：如果输入框里已经是"IP · 说明（来源）"的整条文本，
-    /// 取回前面的纯 IP，避免下次打开下拉时把说明也当成地址保留。
+    /// 兼容旧状态：如果输入框里是整条展示文本（"IP - type:id" 或旧版
+    /// "IP · 说明（来源）"），取回前面的纯 IP，避免下次打开下拉时把说明
+    /// 也当成地址保留。
     /// </summary>
     private static string? TryExtractAddress(string text)
     {
-        var separator = text.IndexOf("  ·  ", StringComparison.Ordinal);
-        if (separator <= 0) return null;
+        var candidate = text.Trim();
 
-        var candidate = text[..separator].Trim();
+        var legacySeparator = candidate.IndexOf("  ·  ", StringComparison.Ordinal);
+        if (legacySeparator > 0) candidate = candidate[..legacySeparator].Trim();
+
+        var separator = candidate.IndexOf(" - ", StringComparison.Ordinal);
+        if (separator > 0) candidate = candidate[..separator].Trim();
+
         return IPAddress.TryParse(candidate, out var ip)
             && ip.AddressFamily == AddressFamily.InterNetwork
             ? candidate
@@ -656,6 +827,8 @@ public sealed class EntryDialog : Form
             return;
         }
 
+        var follow = (_followBox.SelectedItem as FollowChoice)?.Target;
+
         Result = entry;
         ResultMeta = new EntryMeta
         {
@@ -664,6 +837,10 @@ public sealed class EntryDialog : Form
             Note = Trimmed(_noteBox.Text),
             HasFirewallRule = _firewallBox.Checked,
             CreatedAt = _existingMeta?.CreatedAt ?? DateTimeOffset.Now,
+            FollowKind = follow?.Kind,
+            FollowId = follow?.Id,
+            FollowMac = follow?.Mac,
+            FollowLabel = follow?.Label,
         };
 
         DialogResult = DialogResult.OK;

@@ -11,6 +11,25 @@ public static class NetshRunner
 
     public static ProcResult Run(params string[] args) => Run((IReadOnlyList<string>)args);
 
+    /// <summary>
+    /// 只读查询：不记录错误日志。用于"规则不存在"这类正常结果，
+    /// 避免探测行为污染操作日志。
+    /// </summary>
+    public static ProcResult RunQuiet(params string[] args) =>
+        RunQuiet((IReadOnlyList<string>)args);
+
+    public static ProcResult RunQuiet(IReadOnlyList<string> args)
+    {
+        try
+        {
+            return ProcRunner.Run(NetshPath, args);
+        }
+        catch (Exception ex)
+        {
+            return new ProcResult(-1, string.Empty, ex.Message);
+        }
+    }
+
     public static ProcResult Run(IReadOnlyList<string> args)
     {
         var display = "netsh " + string.Join(" ", args.Select(QuoteForDisplay));

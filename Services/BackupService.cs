@@ -14,6 +14,10 @@ public sealed class ExportEntry
     public string? Group { get; set; }
     public string? Note { get; set; }
     public bool HasFirewallRule { get; set; }
+    public string? FollowKind { get; set; }
+    public string? FollowId { get; set; }
+    public string? FollowMac { get; set; }
+    public string? FollowLabel { get; set; }
 
     public PortProxyEntry ToEntry() => new()
     {
@@ -32,6 +36,10 @@ public sealed class ExportEntry
         Note = Note,
         HasFirewallRule = HasFirewallRule,
         CreatedAt = DateTimeOffset.Now,
+        FollowKind = FollowKind,
+        FollowId = FollowId,
+        FollowMac = FollowMac,
+        FollowLabel = FollowLabel,
     };
 
     public static ExportEntry From(PortProxyEntry entry, EntryMeta? meta) => new()
@@ -46,6 +54,10 @@ public sealed class ExportEntry
         Group = meta?.Group,
         Note = meta?.Note,
         HasFirewallRule = meta?.HasFirewallRule ?? false,
+        FollowKind = meta?.FollowKind,
+        FollowId = meta?.FollowId,
+        FollowMac = meta?.FollowMac,
+        FollowLabel = meta?.FollowLabel,
     };
 }
 
@@ -103,7 +115,8 @@ public static class BackupService
 
     /// <summary>破坏性操作前的自动快照，返回文件路径。</summary>
     public static string? WriteSnapshot(
-        PathContext paths, IEnumerable<PortProxyEntry> entries, MetaStore? meta, string tag)
+        PathContext paths, IEnumerable<PortProxyEntry> entries, MetaStore? meta, string tag,
+        AppSettings? settings = null)
     {
         try
         {
@@ -113,12 +126,87 @@ public static class BackupService
 
             JsonIo.Write(file, BuildDocument(entries, meta));
             LogService.Current?.Info($"已创建快照 {file}");
+
+            if (settings is not null) Prune(paths, settings);
             return file;
         }
         catch (Exception ex)
         {
             LogService.Current?.Warn($"创建快照失败：{ex.Message}");
             return null;
+        }
+    }
+
+    public static (int Deleted, int Kept) Prune(PathContext paths, AppSettings settings) =>
+        Prune(paths, settings.BackupKeepCount, settings.BackupKeepDays);
+
+    /// <summary>
+    /// 自动快照保留策略。只处理 backup-*.json，不碰用户手动导出的文件。
+    /// 永远保留最新一份；keepCount / keepDays 为 0 表示该维度不限制。
+    /// </summary>
+    public static (int Deleted, int Kept) Prune(PathContext paths, int keepCount, int keepDays)
+    {
+        try
+        {
+            var dir = new DirectoryInfo(paths.BackupDir);
+            if (!dir.Exists) return (0, 0);
+
+            var files = dir.GetFiles("backup-*.json", SearchOption.TopDirectoryOnly)
+                .OrderByDescending(f => f.LastWriteTimeUtc)
+                .ToList();
+
+            if (files.Count == 0) return (0, 0);
+
+            var now = DateTime.UtcNow;
+            var deleted = 0;
+            var kept = 0;
+
+            for (var i = 0; i < files.Count; i++)
+            {
+                // 最新一份无论多旧都保留，避免策略配置过激后一份不剩
+                if (i == 0)
+                {
+                    kept++;
+                    continue;
+                }
+
+                var tooMany = keepCount > 0 && i >= keepCount;
+                var tooOld = keepDays > 0
+                             && now - files[i].LastWriteTimeUtc > TimeSpan.FromDays(keepDays);
+
+                if (!tooMany && !tooOld)
+                {
+                    kept++;
+                    continue;
+                }
+
+                try
+                {
+                    var name = files[i].Name;
+                    files[i].Delete();
+                    deleted++;
+                    LogService.Current?.Info($"备份保留策略删除旧快照：{name}");
+                }
+                catch (Exception ex)
+                {
+                    LogService.Current?.Warn($"删除旧快照失败：{files[i].Name}：{ex.Message}");
+                    kept++;
+                }
+            }
+
+            if (deleted > 0)
+            {
+                LogService.Current?.Info(
+                    $"备份清理完成：保留 {kept} 份，删除 {deleted} 份" +
+                    $"（上限 {keepCount} 份 / {keepDays} 天）。");
+            }
+
+            return (deleted, kept);
+        }
+        catch (Exception ex)
+        {
+            LogService.Current?.Warn($"清理旧备份失败：{ex.Message}");
+            return (0, 0);
         }
     }
 

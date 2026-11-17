@@ -1,7 +1,7 @@
 namespace PortProxyManager.Services;
 
 /// <summary>
-/// WSL / Hyper-V / Windows 沙盒 / 局域网设备名的探测缓存。
+/// WSL / Hyper-V / Windows 沙盒 / VMware / VirtualBox / 局域网设备名的探测缓存。
 ///
 /// 下拉打开时只读取当前快照，不启动探测；关闭下拉后才在后台刷新，
 /// 下次打开生效。缓存有效期 60 秒，避免每次打开都重启子进程。
@@ -14,6 +14,7 @@ public static class GuestHintCache
     private static List<AddressHint> _hints = new();
     private static DateTime _refreshedAtUtc = DateTime.MinValue;
     private static bool _refreshing;
+    private static Task? _refreshTask;
 
     public static IReadOnlyList<AddressHint> Snapshot
     {
@@ -30,7 +31,7 @@ public static class GuestHintCache
     {
         lock (Gate)
         {
-            if (_refreshing) return;
+            if (_refreshTask is not null) return;
 
             if (!force
                 && _refreshedAtUtc != DateTime.MinValue
@@ -38,9 +39,34 @@ public static class GuestHintCache
                 return;
 
             _refreshing = true;
+            _refreshTask = Task.Run(RefreshAsync);
+        }
+    }
+
+    /// <summary>
+    /// 等待一次刷新完成（正在刷新就复用同一任务），供目标跟随在写映射前拿到最新地址。
+    /// force=false 时仍受 60 秒缓存约束。
+    /// </summary>
+    public static async Task<IReadOnlyList<AddressHint>> RefreshNowAsync(bool force = false)
+    {
+        RefreshIfStale(force);
+
+        Task? task;
+        lock (Gate) task = _refreshTask;
+
+        if (task is not null)
+        {
+            try
+            {
+                await task.ConfigureAwait(false);
+            }
+            catch
+            {
+                // RefreshAsync 自己会记录异常，这里只负责等待
+            }
         }
 
-        _ = Task.Run(RefreshAsync);
+        return Snapshot;
     }
 
     private static async Task RefreshAsync()
@@ -68,7 +94,11 @@ public static class GuestHintCache
         }
         finally
         {
-            lock (Gate) _refreshing = false;
+            lock (Gate)
+            {
+                _refreshing = false;
+                _refreshTask = null;
+            }
         }
     }
 

@@ -13,17 +13,23 @@ public sealed record AddressHint(
     string Category,
     string? Source = null,
     string? Detail = null,
-    string? Mac = null)
+    string? Mac = null,
+    string? Kind = null,
+    string? Id = null)
 {
-    /// <summary>下拉里显示的文本；选中后只取前面的纯 IP。</summary>
+    /// <summary>
+    /// 下拉里显示的文本，统一为 "ip - type:id"。
+    /// type 取 wsl / wsb / vm / hyperv；网关和普通局域网设备用 gw / lan。
+    /// id 是对应的标识（发行版名、.wsb 文件名、虚拟机名等）。
+    /// 选中后只取前面的纯 IP。
+    /// </summary>
     public string Display
     {
         get
         {
-            var text = $"{Address}  ·  {Category}";
-            if (!string.IsNullOrWhiteSpace(Source)) text += $"（{Source}）";
-            if (!string.IsNullOrWhiteSpace(Detail)) text += $"  —  {Detail}";
-            return text;
+            var kind = string.IsNullOrWhiteSpace(Kind) ? "lan" : Kind;
+            var id = string.IsNullOrWhiteSpace(Id) ? (Source ?? Category) : Id;
+            return $"{Address} - {kind}:{id}";
         }
     }
 }
@@ -32,8 +38,9 @@ public sealed record AddressHint(
 /// 收集可作为 portproxy 目标的候选地址，并尽量说明"这个 IP 是谁"。
 ///
 /// 下拉只列默认网关、虚拟机和邻居设备；本机网卡 / 虚拟网卡地址不展示。
-/// MAC 只在内部用于区分 Hyper-V / VMware / VirtualBox 和识别 Windows 沙盒，
-/// 不显示给用户。局域网设备名通过系统反向解析（DNS / mDNS）补充。
+/// 下拉文本统一为 "ip - type:id"；MAC 用于区分 Hyper-V / VMware / VirtualBox、
+/// 识别 Windows 沙盒，并在查不到设备名 / 虚拟机名时作为 id 兜底。
+/// 局域网设备名通过系统反向解析（DNS / mDNS）补充。
 /// 有管理员权限时再问 Hyper-V（Get-VMNetworkAdapter）换出虚拟机名称，
 /// WSL 的客户机 IP 只能问 wsl.exe（宿主机看不到）。
 /// Windows 沙盒没有公开的查询接口，只能结合 Default Switch、微软 OUI
@@ -118,7 +125,7 @@ public static class NetworkHintService
 
         void Add(
             string? address, int priority, string category, string? source,
-            string? detail = null, string? mac = null)
+            string? detail = null, string? mac = null, string? kind = null, string? id = null)
         {
             if (string.IsNullOrWhiteSpace(address)) return;
             if (!IPAddress.TryParse(address, out var ip)) return;
@@ -128,7 +135,7 @@ public static class NetworkHintService
             var text = ip.ToString();
             if (byAddress.TryGetValue(text, out var existing) && existing.Priority <= priority) return;
 
-            byAddress[text] = (priority, new AddressHint(text, category, source, detail, mac));
+            byAddress[text] = (priority, new AddressHint(text, category, source, detail, mac, kind, id));
         }
 
         LocalNetwork network;
@@ -143,7 +150,7 @@ public static class NetworkHintService
         }
 
         foreach (var gateway in network.Gateways)
-            Add(gateway.Address, 0, "默认网关", gateway.Label);
+            Add(gateway.Address, 0, "默认网关", gateway.Label, kind: "gw", id: gateway.Label);
 
         if (includeNeighbors) AddNeighbors(Add, network);
 
@@ -206,7 +213,7 @@ public static class NetworkHintService
     }
 
     private static void AddNeighbors(
-        Action<string?, int, string, string?, string?, string?> add,
+        Action<string?, int, string, string?, string?, string?, string?, string?> add,
         LocalNetwork network)
     {
         try
@@ -248,8 +255,9 @@ public static class NetworkHintService
                 if (count >= 30) break;
 
                 byInterface.TryGetValue(currentInterfaceIp, out var adapter);
-                var (category, source) = DescribeNeighbor(adapter);
-                add(address, 4, category, source, null, mac);
+                var (category, source, kind) = DescribeNeighbor(adapter);
+                // 名称还没查出来时，用 MAC 作为唯一标识兜底
+                add(address, 4, category, source, null, mac, kind, FormatMacId(mac));
                 count++;
             }
         }
@@ -269,20 +277,22 @@ public static class NetworkHintService
     }
 
     /// <summary>根据邻居所在的接口，说明它大概来自哪张网卡 / 哪个虚拟交换机。</summary>
-    private static (string Category, string? Source) DescribeNeighbor(LocalAdapter? adapter)
+    private static (string Category, string? Source, string Kind) DescribeNeighbor(LocalAdapter? adapter)
     {
-        if (adapter is null) return ("局域网设备", null);
+        if (adapter is null) return ("局域网设备", null, "lan");
 
         return adapter.Kind switch
         {
-            AdapterKind.Wsl => ("WSL 虚拟机", adapter.Label),
-            AdapterKind.DefaultSwitch => ("Hyper-V/沙盒虚拟机", adapter.Label),
-            AdapterKind.HyperV => ("Hyper-V 虚拟机", adapter.Label),
-            AdapterKind.Sandbox => ("Windows 沙盒", adapter.Label),
-            AdapterKind.VMware => ("VMware 虚拟机", adapter.Label),
-            AdapterKind.VirtualBox => ("VirtualBox 虚拟机", adapter.Label),
-            AdapterKind.Tunnel => ("隧道对端", adapter.Label),
-            _ => ("局域网设备", adapter.Label),
+            AdapterKind.Wsl => ("WSL 虚拟机", adapter.Label, "wsl"),
+            // Default Switch 上既可能是 Hyper-V 虚拟机，也可能是 Windows 沙盒；
+            // 等 Hyper-V / 沙盒探测给出确切身份后再细分。
+            AdapterKind.DefaultSwitch => ("Hyper-V/沙盒虚拟机", adapter.Label, "vm"),
+            AdapterKind.HyperV => ("Hyper-V 虚拟机", adapter.Label, "hyperv"),
+            AdapterKind.Sandbox => ("Windows 沙盒", adapter.Label, "wsb"),
+            AdapterKind.VMware => ("VMware 虚拟机", adapter.Label, "vm"),
+            AdapterKind.VirtualBox => ("VirtualBox 虚拟机", adapter.Label, "vm"),
+            AdapterKind.Tunnel => ("隧道对端", adapter.Label, "lan"),
+            _ => ("局域网设备", adapter.Label, "lan"),
         };
     }
 
@@ -320,7 +330,11 @@ public static class NetworkHintService
             .Where(t => t.IsCompletedSuccessfully)
             .Select(t => t.Result)
             .Where(r => r.Name is not null)
-            .Select(r => r.Hint with { Detail = r.Name })
+            .Select(r => r.Hint with
+            {
+                Detail = r.Name,
+                Id = r.Name,
+            })
             .ToList();
     }
 
@@ -411,6 +425,7 @@ public static class NetworkHintService
         baseHints ??= GetHints();
 
         var vmTask = ProbeHyperVAsync(baseHints, Math.Min(timeoutMs, 8000));
+        var vmCliTask = ProbeVmNamesAsync(baseHints, Math.Min(timeoutMs, 8000));
         var sandboxRunning = IsWindowsSandboxRunning();
         var sandboxNameTask = sandboxRunning
             ? GetWindowsSandboxNameAsync(Math.Min(timeoutMs, 4000))
@@ -418,22 +433,34 @@ public static class NetworkHintService
 
         try
         {
-            await Task.WhenAll(vmTask, sandboxNameTask).ConfigureAwait(false);
+            await Task.WhenAll(vmTask, vmCliTask, sandboxNameTask).ConfigureAwait(false);
         }
         catch (Exception ex)
         {
             LogService.Current?.Warn($"识别本机虚拟机失败：{ex.Message}");
         }
 
+        var sandboxName = sandboxNameTask.IsCompletedSuccessfully ? sandboxNameTask.Result : null;
         var identified = new List<AddressHint>();
 
-        if (vmTask.IsCompletedSuccessfully) identified.AddRange(vmTask.Result);
+        // VMware / VirtualBox 的 CLI 结果给出确切虚拟机名，优先保留
+        if (vmCliTask.IsCompletedSuccessfully) identified.AddRange(vmCliTask.Result);
+
+        if (vmTask.IsCompletedSuccessfully)
+        {
+            foreach (var hint in vmTask.Result)
+            {
+                // Hyper-V 里名为 Sandbox 的虚拟机由沙盒进程配置，补上 .wsb 文件名
+                identified.Add(hint.Kind == "wsb" && !string.IsNullOrWhiteSpace(sandboxName)
+                    ? hint with { Id = sandboxName }
+                    : hint);
+            }
+        }
 
         // 沙盒没有查询接口：正在运行且该地址未被已知的 Hyper-V 虚拟机认领，
         // 才把 Default Switch 上的微软 OUI 设备标成"疑似"。
         if (sandboxRunning)
         {
-            var sandboxName = sandboxNameTask.IsCompletedSuccessfully ? sandboxNameTask.Result : null;
             AddSandboxHints(baseHints, vmTask, sandboxName, identified);
         }
 
@@ -512,6 +539,8 @@ public static class NetworkHintService
                 Category = "疑似 Windows 沙盒",
                 Source = sandboxName ?? primary.Source,
                 Detail = string.Join(" · ", detailParts),
+                Kind = "wsb",
+                Id = sandboxName ?? "WindowsSandbox",
             });
         }
     }
@@ -627,11 +656,12 @@ public static class NetworkHintService
                     ProcTextEncoding.Utf16);
                 var distros = ParseWslDistros(listResult);
                 if (distros.Count == 0)
-                    return (Ip: (ProcResult?)null, Distros: distros);
+                    return (Ip: (ProcResult?)null, Distro: (string?)null);
 
                 // 指定已运行的发行版执行 hostname -I，避免把默认发行版拉起来。
                 // hostname -I 的 stdout 是 Linux 命令原始输出（ASCII/UTF-8）。
                 ProcResult? ipResult = null;
+                string? probedDistro = null;
                 foreach (var distro in distros)
                 {
                     var probe = ProcRunner.Run(
@@ -639,11 +669,12 @@ public static class NetworkHintService
                     if (probe.Ok)
                     {
                         ipResult = probe;
+                        probedDistro = distro;
                         break;
                     }
                 }
 
-                return (Ip: ipResult, Distros: distros);
+                return (Ip: ipResult, Distro: probedDistro);
             }).ConfigureAwait(false);
 
             if (result.Ip is null || !result.Ip.Ok) return Array.Empty<AddressHint>();
@@ -658,7 +689,7 @@ public static class NetworkHintService
                 .Where(ip => !localIps.Contains(ip))
                 .ToList();
 
-            var distroLabel = FormatDistroNames(result.Distros);
+            var distroLabel = result.Distro;
 
             // 镜像网络（networkingMode=mirrored）下 WSL 与宿主机共用网络命名空间，
             // hostname -I 返回的是宿主机地址，不能当成 WSL 虚拟机的独立 IP。
@@ -671,7 +702,13 @@ public static class NetworkHintService
                     : $"{distroLabel} 与 Windows 共用 localhost";
                 return new[]
                 {
-                    new AddressHint("127.0.0.1", "WSL 客户机", "镜像网络", detail),
+                    new AddressHint(
+                        "127.0.0.1",
+                        "WSL 客户机",
+                        "镜像网络",
+                        detail,
+                        Kind: "wsl",
+                        Id: distroLabel ?? "WSL"),
                 };
             }
 
@@ -692,7 +729,13 @@ public static class NetworkHintService
             var source = distroLabel ?? "WSL";
             return candidates
                 .Distinct(StringComparer.OrdinalIgnoreCase)
-                .Select(ip => new AddressHint(ip, "WSL 客户机", source, "NAT 虚拟网络"))
+                .Select(ip => new AddressHint(
+                    ip,
+                    "WSL 客户机",
+                    source,
+                    "NAT 虚拟网络",
+                    Kind: "wsl",
+                    Id: source))
                 .ToList();
         }
         catch (Exception ex)
@@ -726,13 +769,6 @@ public static class NetworkHintService
             .Where(line => line.Length > 0)
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToList();
-    }
-
-    private static string? FormatDistroNames(List<string> names)
-    {
-        if (names.Count == 0) return null;
-        var text = string.Join("、", names.Take(3));
-        return names.Count > 3 ? text + " 等" : text;
     }
 
     private static string PowerShellExe => Path.Combine(
@@ -842,9 +878,8 @@ public static class NetworkHintService
                 }
 
                 var switchName = JsonString(nic, "SwitchName")?.Trim();
-                var category = vmName.Contains("Sandbox", StringComparison.OrdinalIgnoreCase)
-                    ? "Windows 沙盒"
-                    : "Hyper-V 虚拟机";
+                var isSandbox = vmName.Contains("Sandbox", StringComparison.OrdinalIgnoreCase);
+                var category = isSandbox ? "Windows 沙盒" : "Hyper-V 虚拟机";
 
                 var stateText = LocalizeVmState(state);
                 var detail = string.IsNullOrEmpty(stateText)
@@ -856,7 +891,14 @@ public static class NetworkHintService
                     .Where(usedIps.Add)
                     .Take(3))
                 {
-                    hints.Add(new AddressHint(ip, category, switchName, detail, mac));
+                    hints.Add(new AddressHint(
+                        ip,
+                        category,
+                        switchName,
+                        detail,
+                        mac,
+                        isSandbox ? "wsb" : "hyperv",
+                        vmName));
                 }
             }
 
@@ -872,6 +914,273 @@ public static class NetworkHintService
             LogService.Current?.Info($"查询 Hyper-V 虚拟机列表跳过：{ex.Message}");
             return Array.Empty<AddressHint>();
         }
+    }
+
+    /// <summary>
+    /// VMware / VirtualBox 不会通过 KVP 或系统接口暴露虚拟机名，
+    /// 只能用各自的 CLI（vmrun / VBoxManage）把运行中虚拟机的 MAC 映射回名称。
+    /// 工具不存在或查询失败时，保留 MAC 作为 id 兜底。
+    /// </summary>
+    private static async Task<IReadOnlyList<AddressHint>> ProbeVmNamesAsync(
+        IReadOnlyList<AddressHint> baseHints,
+        int timeoutMs)
+    {
+        var candidates = baseHints
+            .Where(h => h.Kind == "vm" && h.Mac is not null)
+            .ToList();
+
+        if (candidates.Count == 0) return Array.Empty<AddressHint>();
+
+        var tasks = new List<Task<Dictionary<string, string>>>();
+        if (candidates.Any(h => h.Category.Contains("VirtualBox", StringComparison.OrdinalIgnoreCase)))
+            tasks.Add(ProbeVirtualBoxNamesAsync(timeoutMs));
+        if (candidates.Any(h => h.Category.Contains("VMware", StringComparison.OrdinalIgnoreCase)))
+            tasks.Add(ProbeVmwareNamesAsync(timeoutMs));
+
+        if (tasks.Count == 0) return Array.Empty<AddressHint>();
+
+        try
+        {
+            await Task.WhenAll(tasks).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            LogService.Current?.Info($"查询虚拟机名称失败：{ex.Message}");
+        }
+
+        var byMac = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var task in tasks)
+        {
+            if (!task.IsCompletedSuccessfully) continue;
+            foreach (var pair in task.Result) byMac[pair.Key] = pair.Value;
+        }
+
+        return candidates
+            .Where(h => byMac.ContainsKey(h.Mac!))
+            .Select(h => h with { Kind = "vm", Id = byMac[h.Mac!] })
+            .ToList();
+    }
+
+    private static Task<Dictionary<string, string>> ProbeVirtualBoxNamesAsync(int timeoutMs)
+    {
+        return Task.Run(() =>
+        {
+            var names = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            try
+            {
+                var exe = FindTool(
+                    "VBoxManage.exe",
+                    Path.Combine(ProgramFiles, "Oracle", "VirtualBox", "VBoxManage.exe"),
+                    Path.Combine(ProgramFilesX86, "Oracle", "VirtualBox", "VBoxManage.exe"));
+                if (exe is null) return names;
+
+                var list = ProcRunner.Run(
+                    exe, new[] { "list", "runningvms" }, Math.Min(timeoutMs, 3000));
+                if (!list.Ok) return names;
+
+                foreach (var vm in ParseVBoxRunningVms(list.StdOut).Take(8))
+                {
+                    var info = ProcRunner.Run(
+                        exe,
+                        new[] { "showvminfo", vm.Uuid, "--machinereadable" },
+                        Math.Min(timeoutMs, 2500));
+                    if (!info.Ok) continue;
+
+                    var (name, macs) = ParseVBoxMachineInfo(info.StdOut);
+                    name ??= vm.Name;
+                    if (string.IsNullOrWhiteSpace(name)) continue;
+
+                    foreach (var mac in macs) names[mac] = name;
+                }
+            }
+            catch (Exception ex)
+            {
+                LogService.Current?.Info($"查询 VirtualBox 虚拟机名称跳过：{ex.Message}");
+            }
+            return names;
+        });
+    }
+
+    private static Task<Dictionary<string, string>> ProbeVmwareNamesAsync(int timeoutMs)
+    {
+        return Task.Run(() =>
+        {
+            var names = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            try
+            {
+                var exe = FindTool(
+                    "vmrun.exe",
+                    Path.Combine(ProgramFiles, "VMware", "VMware Workstation", "vmrun.exe"),
+                    Path.Combine(ProgramFilesX86, "VMware", "VMware Workstation", "vmrun.exe"),
+                    Path.Combine(ProgramFiles, "VMware", "VMware Player", "vmrun.exe"),
+                    Path.Combine(ProgramFilesX86, "VMware", "VMware Player", "vmrun.exe"));
+                if (exe is null) return names;
+
+                var list = ProcRunner.Run(
+                    exe, new[] { "list" }, Math.Min(timeoutMs, 3000));
+                if (!list.Ok) return names;
+
+                foreach (var vmx in ParseVmrunList(list.StdOut).Take(8))
+                {
+                    var (name, macs) = ReadVmxInfo(vmx);
+                    name ??= Path.GetFileNameWithoutExtension(vmx);
+                    if (string.IsNullOrWhiteSpace(name)) continue;
+
+                    foreach (var mac in macs) names[mac] = name;
+                }
+            }
+            catch (Exception ex)
+            {
+                LogService.Current?.Info($"查询 VMware 虚拟机名称跳过：{ex.Message}");
+            }
+            return names;
+        });
+    }
+
+    private static string? FindTool(string fileName, params string[] candidates)
+    {
+        foreach (var candidate in candidates)
+            if (!string.IsNullOrWhiteSpace(candidate) && File.Exists(candidate))
+                return candidate;
+
+        var path = Environment.GetEnvironmentVariable("PATH");
+        if (string.IsNullOrWhiteSpace(path)) return null;
+
+        foreach (var directory in path.Split(
+            Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries))
+        {
+            try
+            {
+                var candidate = Path.Combine(directory.Trim(), fileName);
+                if (File.Exists(candidate)) return candidate;
+            }
+            catch
+            {
+                // PATH 里有非法路径时继续找下一个
+            }
+        }
+
+        return null;
+    }
+
+    private static string ProgramFiles => Environment.GetFolderPath(
+        Environment.SpecialFolder.ProgramFiles);
+
+    private static string ProgramFilesX86 => Environment.GetFolderPath(
+        Environment.SpecialFolder.ProgramFilesX86);
+
+    /// <summary>VBoxManage list runningvms 的行格式："虚拟机名" {uuid}</summary>
+    private static readonly Regex VBoxRunningVmRow = new(
+        "^\\s*\"(?<name>[^\"]+)\"\\s+\\{(?<uuid>[^}]+)\\}\\s*$",
+        RegexOptions.Compiled);
+
+    private static List<(string Name, string Uuid)> ParseVBoxRunningVms(string text)
+    {
+        var result = new List<(string, string)>();
+
+        foreach (var raw in text.Split(
+            new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries))
+        {
+            var match = VBoxRunningVmRow.Match(raw);
+            if (!match.Success) continue;
+            result.Add((match.Groups["name"].Value.Trim(), match.Groups["uuid"].Value.Trim()));
+        }
+
+        return result;
+    }
+
+    /// <summary>
+    /// 从 VBoxManage showvminfo --machinereadable 里取 name 和所有 macaddressN。
+    /// </summary>
+    private static (string? Name, List<string> Macs) ParseVBoxMachineInfo(string text)
+    {
+        string? name = null;
+        var macs = new List<string>();
+
+        foreach (var raw in text.Split(
+            new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries))
+        {
+            var line = raw.Trim();
+            var separator = line.IndexOf('=');
+            if (separator <= 0) continue;
+
+            var key = line[..separator].Trim();
+            var value = line[(separator + 1)..].Trim().Trim('"');
+
+            if (key.Equals("name", StringComparison.OrdinalIgnoreCase))
+            {
+                if (value.Length > 0) name = value;
+            }
+            else if (key.StartsWith("macaddress", StringComparison.OrdinalIgnoreCase))
+            {
+                var mac = NormalizeMac(value);
+                if (mac is not null) macs.Add(mac);
+            }
+        }
+
+        return (name, macs);
+    }
+
+    /// <summary>vmrun list 的第一行是数量，其余每行一个运行中的 .vmx 路径。</summary>
+    private static List<string> ParseVmrunList(string text)
+    {
+        var result = new List<string>();
+
+        foreach (var raw in text.Split(
+            new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries))
+        {
+            var line = raw.Trim();
+            if (line.Length == 0) continue;
+            if (line.StartsWith("Total running VMs:", StringComparison.OrdinalIgnoreCase))
+                continue;
+            if (line.EndsWith(".vmx", StringComparison.OrdinalIgnoreCase))
+                result.Add(line);
+        }
+
+        return result;
+    }
+
+    /// <summary>从 .vmx 里取 displayName 和 ethernetN.address / generatedAddress。</summary>
+    private static (string? Name, List<string> Macs) ReadVmxInfo(string path)
+    {
+        string? name = null;
+        var macs = new List<string>();
+
+        try
+        {
+            if (!File.Exists(path)) return (null, macs);
+
+            foreach (var raw in File.ReadLines(path))
+            {
+                var line = raw.Trim();
+                if (line.Length == 0 || line.StartsWith("#", StringComparison.Ordinal))
+                    continue;
+
+                var separator = line.IndexOf('=');
+                if (separator <= 0) continue;
+
+                var key = line[..separator].Trim();
+                var value = line[(separator + 1)..].Trim().Trim('"');
+
+                if (key.Equals("displayName", StringComparison.OrdinalIgnoreCase))
+                {
+                    if (value.Length > 0) name = value;
+                }
+                else if (key.StartsWith("ethernet", StringComparison.OrdinalIgnoreCase)
+                    && (key.EndsWith(".address", StringComparison.OrdinalIgnoreCase)
+                        || key.EndsWith(".generatedAddress", StringComparison.OrdinalIgnoreCase)))
+                {
+                    var mac = NormalizeMac(value);
+                    if (mac is not null) macs.Add(mac);
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            LogService.Current?.Info($"读取 VMware 配置文件失败：{ex.Message}");
+        }
+
+        return (name, macs);
     }
 
     private static IEnumerable<JsonElement> AsArray(JsonElement element)
@@ -1022,6 +1331,14 @@ public static class NetworkHintService
         if (string.IsNullOrWhiteSpace(mac)) return null;
         var hex = new string(mac.Where(Uri.IsHexDigit).ToArray()).ToUpperInvariant();
         return hex.Length == 12 ? hex : null;
+    }
+
+    /// <summary>把规范化 MAC 显示成 00-15-5D-01-02-03，作为 id 兜底。</summary>
+    private static string FormatMacId(string? mac)
+    {
+        var hex = NormalizeMac(mac);
+        if (hex is null) return "unknown";
+        return string.Join("-", Enumerable.Range(0, 6).Select(i => hex.Substring(i * 2, 2)));
     }
 
     private static bool SameMac(string? a, string? b)

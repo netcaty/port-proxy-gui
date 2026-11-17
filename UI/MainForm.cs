@@ -1,4 +1,5 @@
 using System.ComponentModel;
+using System.Net.NetworkInformation;
 using PortProxyManager.Models;
 using PortProxyManager.Services;
 
@@ -26,6 +27,7 @@ public sealed class MainForm : Form
     private readonly ToolStripComboBox _groupBox = new();
     private readonly ToolStripButton _editButton = new("编辑");
     private readonly ToolStripButton _deleteButton = new("删除");
+    private readonly ToolStripButton _diagnoseButton = new("诊断");
     private readonly ToolStripButton _autostartButton = new("开机自启");
     private readonly ToolTip _tooltip = new();
     private readonly NotifyIcon _tray = new();
@@ -35,11 +37,18 @@ public sealed class MainForm : Form
     private ToolStripMenuItem _rowMenuDelete = null!;
     private ToolStripMenuItem _rowMenuCopy = null!;
     private ToolStripMenuItem _rowMenuProbe = null!;
+    private ToolStripMenuItem _rowMenuFollow = null!;
+    private ToolStripMenuItem _rowMenuDiagnose = null!;
+    private ToolStripMenuItem _trayAutostart = null!;
     private EntryRow? _contextRow;
     private DateTime _lastLeftClickUtc = DateTime.MinValue;
     private Point _lastLeftClickPoint;
 
     private RegistryWatcher? _watcher;
+    private readonly System.Windows.Forms.Timer _followTimer = new() { Interval = 5 * 60 * 1000 };
+    private readonly System.Windows.Forms.Timer _networkDebounceTimer = new() { Interval = 3_000 };
+    private int _followSyncRunning;
+    private int _followPendingCount;
     private List<EntryRow> _rows = new();
     private List<EntryRow> _view = new();
     private string? _sortProperty;
@@ -79,6 +88,10 @@ public sealed class MainForm : Form
 
         RefreshData();
         StartWatcher();
+        InitializeFollowSync();
+
+        // 启动时按保留策略清一次旧快照，避免历史备份无限增长
+        BackupService.Prune(_paths, _settings.Value);
 
         var uiTimer = new System.Windows.Forms.Timer { Interval = 1500 };
         uiTimer.Tick += (_, _) =>
@@ -183,6 +196,10 @@ public sealed class MainForm : Form
         var refreshButton = new ToolStripButton("刷新") { ToolTipText = "重新读取 (F5)" };
         refreshButton.Click += (_, _) => RefreshData();
 
+        _diagnoseButton.ToolTipText = "诊断选中映射的转发链路";
+        _diagnoseButton.Click += (_, _) => DiagnoseSelected();
+        _diagnoseButton.Enabled = false;
+
         var importButton = new ToolStripButton("导入") { ToolTipText = "从 JSON 导入（先预览差异）" };
         importButton.Click += (_, _) => ImportFile();
 
@@ -223,6 +240,7 @@ public sealed class MainForm : Form
         _toolbar.Items.Add(_deleteButton);
         _toolbar.Items.Add(new ToolStripSeparator());
         _toolbar.Items.Add(refreshButton);
+        _toolbar.Items.Add(_diagnoseButton);
         _toolbar.Items.Add(new ToolStripSeparator());
         _toolbar.Items.Add(_filterBox);
         _toolbar.Items.Add(_groupBox);
@@ -276,6 +294,7 @@ public sealed class MainForm : Form
         AddColumn("ListenPort", "监听端口", 76);
         AddColumn("ConnectAddress", "目标地址", 108);
         AddColumn("ConnectPort", "目标端口", 76);
+        AddColumn("Follow", "跟随", 96);
         AddColumn("Firewall", "防火墙", 68);
         AddColumn("Note", "备注", 150);
 
@@ -347,11 +366,14 @@ public sealed class MainForm : Form
         var refresh = new ToolStripMenuItem("刷新");
         refresh.Click += (_, _) => RefreshData();
 
+        var followSync = new ToolStripMenuItem("同步跟随目标");
+        followSync.Click += (_, _) => _ = SyncFollowTargetsAsync(manual: true, forceRefresh: true);
+
         var dataDir = new ToolStripMenuItem("打开数据目录");
         dataDir.Click += (_, _) => OpenDataDir();
 
-        var autostart = new ToolStripMenuItem("开机自启") { CheckOnClick = false };
-        autostart.Click += (_, _) => ToggleAutostart();
+        _trayAutostart = new ToolStripMenuItem("开机自启") { CheckOnClick = false };
+        _trayAutostart.Click += (_, _) => ToggleAutostart();
 
         var exit = new ToolStripMenuItem("退出");
         exit.Click += (_, _) => ExitApplication();
@@ -359,15 +381,16 @@ public sealed class MainForm : Form
         _trayMenu.Items.Add(open);
         _trayMenu.Items.Add(new ToolStripSeparator());
         _trayMenu.Items.Add(refresh);
+        _trayMenu.Items.Add(followSync);
         _trayMenu.Items.Add(dataDir);
         _trayMenu.Items.Add(new ToolStripSeparator());
-        _trayMenu.Items.Add(autostart);
+        _trayMenu.Items.Add(_trayAutostart);
         _trayMenu.Items.Add(new ToolStripSeparator());
         _trayMenu.Items.Add(exit);
         _trayMenu.Opening += (_, _) =>
         {
-            autostart.Checked = AutorunService.IsEnabled();
-            autostart.Enabled = _elevated;
+            _trayAutostart.Checked = AutorunService.IsEnabled();
+            _trayAutostart.Enabled = _elevated;
         };
 
         _tray.ContextMenuStrip = _trayMenu;
@@ -541,6 +564,7 @@ public sealed class MainForm : Form
         var canEdit = row is not null && _elevated;
         _editButton.Enabled = canEdit;
         _deleteButton.Enabled = canEdit;
+        _diagnoseButton.Enabled = row is not null;
     }
 
     private void UpdateHelperStatus()
@@ -628,6 +652,18 @@ public sealed class MainForm : Form
             }
         }
 
+        if (_followPendingCount > 0)
+        {
+            lines.Add($"有 {_followPendingCount} 条跟随目标已变化，等待写入映射。");
+            if (action is null)
+            {
+                action = _elevated
+                    ? () => { _ = SyncFollowTargetsAsync(manual: true, forceRefresh: true); }
+                    : () => { RequireElevation(); };
+                actionText = _elevated ? "立即同步" : "以管理员同步";
+            }
+        }
+
         _bannerAction = action;
 
         if (lines.Count == 0)
@@ -656,8 +692,7 @@ public sealed class MainForm : Form
         _autostartButton.Checked = enabled;
         _autostartButton.Text = enabled ? "自启 ✓" : "自启";
         _autostartButton.Enabled = _elevated;
-        if (_trayMenu.Items.Count > 5 && _trayMenu.Items[5] is ToolStripMenuItem item)
-            item.Checked = enabled;
+        _trayAutostart.Checked = enabled;
     }
 
     /// <summary>查询计划任务要起一个 schtasks 进程，缓存 30 秒避免刷新时反复调用。</summary>
@@ -719,7 +754,7 @@ public sealed class MainForm : Form
 
         if (answer != DialogResult.Yes) return;
 
-        BackupService.WriteSnapshot(_paths, _service.Snapshot(), _meta, "pre-rebuild");
+        BackupService.WriteSnapshot(_paths, _service.Snapshot(), _meta, "pre-rebuild", _settings.Value);
 
         RunGuarded("重建映射", () =>
         {
@@ -752,6 +787,162 @@ public sealed class MainForm : Form
             if (!IsDisposed) RefreshData();
         };
         timer.Start();
+    }
+
+    // ---------------------------------------------------------------- 目标跟随
+
+    private void InitializeFollowSync()
+    {
+        _followTimer.Tick += (_, _) => _ = SyncFollowTargetsAsync(manual: false, forceRefresh: false);
+        _followTimer.Start();
+
+        _networkDebounceTimer.Tick += (_, _) =>
+        {
+            _networkDebounceTimer.Stop();
+            _ = SyncFollowTargetsAsync(manual: false, forceRefresh: true);
+        };
+
+        NetworkChange.NetworkAddressChanged += OnNetworkAddressChanged;
+
+        // 启动后稍等再同步一次，避免和窗口初始化、注册表监听抢资源
+        var startup = new System.Windows.Forms.Timer { Interval = 4000 };
+        startup.Tick += (_, _) =>
+        {
+            startup.Stop();
+            startup.Dispose();
+            if (!IsDisposed) _ = SyncFollowTargetsAsync(manual: false, forceRefresh: true);
+        };
+        startup.Start();
+    }
+
+    private void OnNetworkAddressChanged(object? sender, EventArgs e)
+    {
+        if (IsDisposed || !IsHandleCreated) return;
+
+        try
+        {
+            BeginInvoke(() =>
+            {
+                if (IsDisposed) return;
+                _networkDebounceTimer.Stop();
+                _networkDebounceTimer.Start();
+            });
+        }
+        catch
+        {
+            // 窗口正在销毁
+        }
+    }
+
+    private void SyncFollowFromMenu()
+    {
+        if (_contextRow?.Meta?.IsFollowing != true) return;
+        _ = SyncFollowTargetsAsync(manual: true, forceRefresh: true, onlyKey: _contextRow.Key);
+    }
+
+    /// <summary>
+    /// 探测所有启用跟随的映射，地址变化时重建映射。
+    /// 自动触发只写日志/托盘气泡；手动触发才弹结果汇总。
+    /// </summary>
+    private async Task SyncFollowTargetsAsync(bool manual, bool forceRefresh, string? onlyKey = null)
+    {
+        if (Interlocked.Exchange(ref _followSyncRunning, 1) == 1)
+        {
+            if (manual)
+            {
+                MessageBox.Show(this, "正在同步跟随目标，请稍候。", "目标跟随",
+                    MessageBoxButtons.OK, MessageBoxIcon.Information);
+            }
+            return;
+        }
+
+        try
+        {
+            var entries = _rows
+                .Where(r => r.Meta?.IsFollowing == true)
+                .Where(r => onlyKey is null
+                    || string.Equals(r.Key, onlyKey, StringComparison.OrdinalIgnoreCase))
+                .Select(r => (r.Entry, r.Meta!))
+                .ToList();
+
+            if (entries.Count == 0)
+            {
+                if (manual)
+                {
+                    MessageBox.Show(this, "当前没有启用目标跟随的映射。", "目标跟随",
+                        MessageBoxButtons.OK, MessageBoxIcon.Information);
+                }
+                return;
+            }
+
+            if (manual) Cursor = Cursors.WaitCursor;
+
+            IReadOnlySet<string>? keys = onlyKey is null
+                ? null
+                : new HashSet<string>(StringComparer.OrdinalIgnoreCase) { onlyKey };
+
+            var report = await TargetFollowService.SyncAsync(
+                entries, _service, _elevated, forceRefresh, keys);
+
+            _followPendingCount = report.NeedsElevationCount;
+
+            if (report.UpdatedCount > 0)
+            {
+                RefreshData();
+
+                if (!manual)
+                {
+                    _tray.ShowBalloonTip(2500, "PortProxy 管理器",
+                        $"已按跟随规则更新 {report.UpdatedCount} 条映射的目标地址。",
+                        ToolTipIcon.Info);
+                }
+            }
+
+            if (report.FailedCount > 0 && !manual)
+            {
+                _tray.ShowBalloonTip(3000, "PortProxy 管理器",
+                    $"有 {report.FailedCount} 条跟随映射更新失败，详情见日志。",
+                    ToolTipIcon.Warning);
+            }
+
+            if (report.UnresolvedCount > 0 && !manual)
+            {
+                LogService.Current?.Info(
+                    $"目标跟随：{report.UnresolvedCount} 条目标当前未检测到，已保留原地址。");
+            }
+
+            UpdateBanner();
+
+            if (manual || report.FailedCount > 0)
+            {
+                var lines = report.Items
+                    .Where(i => i.Status != FollowSyncStatus.UpToDate)
+                    .Select(i => $"{i.Entry.ListenText}：{i.StatusLabel} — {i.Message}")
+                    .Take(12)
+                    .ToList();
+
+                if (lines.Count == 0) lines.Add("所有跟随目标均无变化。");
+
+                MessageBox.Show(this, string.Join(Environment.NewLine, lines),
+                    manual ? "同步跟随目标" : "跟随失败",
+                    MessageBoxButtons.OK,
+                    report.FailedCount > 0 ? MessageBoxIcon.Warning : MessageBoxIcon.Information);
+            }
+        }
+        catch (Exception ex)
+        {
+            LogService.Current?.Error($"同步跟随目标失败：{ex}");
+            if (manual)
+            {
+                MessageBox.Show(this, $"同步跟随目标失败：\n\n{ex.Message}", "目标跟随",
+                    MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+        }
+        finally
+        {
+            if (manual) Cursor = Cursors.Default;
+            Interlocked.Exchange(ref _followSyncRunning, 0);
+        }
     }
 
     private void RestartHelperService()
@@ -877,7 +1068,7 @@ public sealed class MainForm : Form
             return;
         }
 
-        BackupService.WriteSnapshot(_paths, _service.Snapshot(), _meta, "pre-update");
+        BackupService.WriteSnapshot(_paths, _service.Snapshot(), _meta, "pre-update", _settings.Value);
 
         RunGuarded("修改映射", () =>
         {
@@ -926,7 +1117,7 @@ public sealed class MainForm : Form
                 MessageBoxDefaultButton.Button2) != DialogResult.Yes)
             return;
 
-        BackupService.WriteSnapshot(_paths, _service.Snapshot(), _meta, "pre-delete");
+        BackupService.WriteSnapshot(_paths, _service.Snapshot(), _meta, "pre-delete", _settings.Value);
 
         var hadFirewall = row.Meta?.HasFirewallRule == true;
         var deleted = RunGuarded("删除映射", () =>
@@ -1067,7 +1258,7 @@ public sealed class MainForm : Form
             return;
         }
 
-        BackupService.WriteSnapshot(_paths, _service.Snapshot(), _meta, "pre-import");
+        BackupService.WriteSnapshot(_paths, _service.Snapshot(), _meta, "pre-import", _settings.Value);
 
         Cursor = Cursors.WaitCursor;
         try
@@ -1237,6 +1428,7 @@ public sealed class MainForm : Form
             nameof(EntryRow.ListenPort) => a.ListenPort.CompareTo(b.ListenPort),
             nameof(EntryRow.ConnectAddress) => CompareAddress(a.ConnectAddress, b.ConnectAddress),
             nameof(EntryRow.ConnectPort) => a.ConnectPort.CompareTo(b.ConnectPort),
+            nameof(EntryRow.Follow) => string.Compare(a.Follow, b.Follow, StringComparison.CurrentCultureIgnoreCase),
             nameof(EntryRow.Firewall) => string.Compare(a.Firewall, b.Firewall, StringComparison.Ordinal),
             nameof(EntryRow.Note) => string.Compare(a.Note, b.Note, StringComparison.CurrentCultureIgnoreCase),
             _ => 0,
@@ -1266,12 +1458,17 @@ public sealed class MainForm : Form
         _rowMenuDelete = new ToolStripMenuItem("删除…", null, (_, _) => DeleteEntry());
         _rowMenuCopy = new ToolStripMenuItem("复制 netsh 命令", null, (_, _) => CopyNetshCommand());
         _rowMenuProbe = new ToolStripMenuItem("测试目标连通性", null, (_, _) => ProbeTarget());
+        _rowMenuFollow = new ToolStripMenuItem("立即同步跟随目标", null, (_, _) => SyncFollowFromMenu());
+        _rowMenuDiagnose = new ToolStripMenuItem("诊断转发链路…", null, (_, _) => DiagnoseContextRow());
 
         _rowMenu.Items.Add(_rowMenuEdit);
         _rowMenu.Items.Add(_rowMenuDelete);
         _rowMenu.Items.Add(new ToolStripSeparator());
         _rowMenu.Items.Add(_rowMenuCopy);
         _rowMenu.Items.Add(_rowMenuProbe);
+        _rowMenu.Items.Add(new ToolStripSeparator());
+        _rowMenu.Items.Add(_rowMenuFollow);
+        _rowMenu.Items.Add(_rowMenuDiagnose);
     }
 
     private void GridMouseDown(object? sender, MouseEventArgs e)
@@ -1325,6 +1522,8 @@ public sealed class MainForm : Form
         _rowMenuDelete.Enabled = _elevated;
         _rowMenuCopy.Enabled = true;
         _rowMenuProbe.Enabled = true;
+        _rowMenuFollow.Enabled = _contextRow.Meta?.IsFollowing == true;
+        _rowMenuDiagnose.Enabled = true;
 
         _rowMenu.Show(_grid, e.Location);
     }
@@ -1366,6 +1565,131 @@ public sealed class MainForm : Form
             LogService.Current?.Error($"连通性测试异常：{ex}");
             if (!IsDisposed)
                 MessageBox.Show(this, $"测试失败：{ex.Message}", "连接测试", MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
+    }
+
+    // ---------------------------------------------------------------- 诊断
+
+    private void DiagnoseSelected()
+    {
+        var row = SelectedRow();
+        if (row is null) return;
+        DiagnoseEntry(row);
+    }
+
+    private void DiagnoseContextRow()
+    {
+        if (_contextRow is null) return;
+        DiagnoseEntry(_contextRow);
+    }
+
+    /// <summary>
+    /// 打开诊断窗口；如果用户在窗口里点了修复动作，执行后再次打开复查。
+    /// </summary>
+    private async void DiagnoseEntry(EntryRow row)
+    {
+        var entry = row.Entry;
+        var meta = _meta.Get(entry.Key) ?? row.Meta;
+
+        try
+        {
+            while (!IsDisposed)
+            {
+                using var dialog = new DiagnosticsDialog(entry, meta, _elevated);
+
+                if (dialog.ShowDialog(this) != DialogResult.OK
+                    || dialog.Action == DiagnosticAction.None)
+                    return;
+
+                var ok = PerformDiagnosticAction(dialog.Action, entry);
+
+                // 服务重启 / 端口重建需要一点时间才能看到监听器
+                if (ok) await Task.Delay(1200);
+
+                if (IsDisposed) return;
+
+                RefreshData();
+                meta = _meta.Get(entry.Key) ?? meta;
+
+                if (!ok) return;
+            }
+        }
+        catch (Exception ex)
+        {
+            LogService.Current?.Error($"诊断流程失败：{ex}");
+            if (!IsDisposed)
+            {
+                MessageBox.Show(this, $"诊断流程失败：\n\n{ex.Message}", "诊断",
+                    MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+        }
+    }
+
+    private bool PerformDiagnosticAction(DiagnosticAction action, PortProxyEntry entry)
+    {
+        switch (action)
+        {
+            case DiagnosticAction.StartIpHelper:
+            {
+                Cursor = Cursors.WaitCursor;
+                try
+                {
+                    var (ok, message) = IpHelperService.TryStart();
+                    MessageBox.Show(this, message, "IP Helper", MessageBoxButtons.OK,
+                        ok ? MessageBoxIcon.Information : MessageBoxIcon.Warning);
+                    return ok;
+                }
+                finally
+                {
+                    Cursor = Cursors.Default;
+                }
+            }
+
+            case DiagnosticAction.RestartIpHelper:
+            {
+                Cursor = Cursors.WaitCursor;
+                try
+                {
+                    var (ok, message) = IpHelperService.TryRestart();
+                    MessageBox.Show(this, message, "IP Helper", MessageBoxButtons.OK,
+                        ok ? MessageBoxIcon.Information : MessageBoxIcon.Warning);
+                    return ok;
+                }
+                finally
+                {
+                    Cursor = Cursors.Default;
+                }
+            }
+
+            case DiagnosticAction.RebuildMapping:
+                RebuildMapping(entry);
+                return true;
+
+            case DiagnosticAction.AddFirewallRule:
+            {
+                Cursor = Cursors.WaitCursor;
+                try
+                {
+                    var (ok, message) = FirewallService.Add(entry);
+                    if (ok)
+                    {
+                        var stored = _meta.GetOrCreate(entry.Key);
+                        stored.HasFirewallRule = true;
+                        _meta.Save();
+                    }
+
+                    MessageBox.Show(this, message, "防火墙", MessageBoxButtons.OK,
+                        ok ? MessageBoxIcon.Information : MessageBoxIcon.Warning);
+                    return ok;
+                }
+                finally
+                {
+                    Cursor = Cursors.Default;
+                }
+            }
+
+            default:
+                return false;
         }
     }
 
@@ -1494,6 +1818,13 @@ public sealed class MainForm : Form
     {
         if (disposing)
         {
+            NetworkChange.NetworkAddressChanged -= OnNetworkAddressChanged;
+
+            _followTimer.Stop();
+            _followTimer.Dispose();
+            _networkDebounceTimer.Stop();
+            _networkDebounceTimer.Dispose();
+
             _watcher?.Dispose();
             _tray.Dispose();
             _trayMenu.Dispose();
