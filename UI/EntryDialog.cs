@@ -554,7 +554,9 @@ public sealed class EntryDialog : Form
             _connectAddress.SelectedIndex = -1;
 
             var snapshot = GuestHintCache.Snapshot;
-            var source = snapshot.Count > 0 ? snapshot : NetworkHintService.GetHints();
+            var source = snapshot.Count > 0
+                ? snapshot
+                : NetworkHintService.FilterUnconfirmedGuests(NetworkHintService.GetHints());
 
             var sandboxMacs = new HashSet<string>(
                 source

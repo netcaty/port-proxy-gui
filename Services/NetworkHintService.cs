@@ -15,13 +15,18 @@ public sealed record AddressHint(
     string? Detail = null,
     string? Mac = null,
     string? Kind = null,
-    string? Id = null)
+    string? Id = null,
+    bool Confirmed = false)
 {
     /// <summary>
     /// 下拉里显示的文本，统一为 "ip - type:id"。
     /// type 取 wsl / wsb / vm / hyperv；网关和普通局域网设备用 gw / lan。
     /// id 是对应的标识（发行版名、.wsb 文件名、虚拟机名等）。
     /// 选中后只取前面的纯 IP。
+    ///
+    /// Confirmed 表示该虚拟机/沙盒已被对应探测确认正在运行：
+    /// 网关和局域网设备走 ARP，不要求确认；wsl / wsb / vm / hyperv
+    /// 只有确认过才允许进入下拉。
     /// </summary>
     public string Display
     {
@@ -37,15 +42,16 @@ public sealed record AddressHint(
 /// <summary>
 /// 收集可作为 portproxy 目标的候选地址，并尽量说明"这个 IP 是谁"。
 ///
-/// 下拉只列默认网关、虚拟机和邻居设备；本机网卡 / 虚拟网卡地址不展示。
-/// 下拉文本统一为 "ip - type:id"；MAC 用于区分 Hyper-V / VMware / VirtualBox、
-/// 识别 Windows 沙盒，并在查不到设备名 / 虚拟机名时作为 id 兜底。
-/// 局域网设备名通过系统反向解析（DNS / mDNS）补充。
+/// 下拉只列默认网关、运行中的虚拟机和邻居设备；本机网卡 / 虚拟网卡地址不展示。
+/// 网关和普通局域网设备可以直接用 ARP / 反向 DNS；
+/// WSL / 沙盒 / Hyper-V / VMware / VirtualBox 必须先由各自探测确认正在运行，
+/// 再用 KVP / guest CLI / ARP 解析 IP，未确认的虚拟邻居不会进入下拉。
+/// 下拉文本统一为 "ip - type:id"；MAC 用于区分虚拟化平台、识别 Windows 沙盒，
+/// 并在查不到设备名 / 虚拟机名时作为 id 兜底。
 /// 有管理员权限时再问 Hyper-V（Get-VMNetworkAdapter）换出虚拟机名称，
 /// WSL 的客户机 IP 只能问 wsl.exe（宿主机看不到）。
-/// 新版 Windows 沙盒自带 wsb CLI，用 `wsb list` / `wsb ip --id` 直接取
-/// 运行中沙盒的 IP 和 .wsb 配置名；老版本没有该命令时，再结合 Default Switch、
-/// 微软 OUI 和 WindowsSandbox 进程窗口做启发式判断。
+/// 新版 Windows 沙盒自带 wsb CLI，用 `wsb list` 确认沙盒正在运行；
+/// `wsb ip` 在部分版本会永久挂起，IP 统一走 ARP + Hyper-V 启发式兜底。
 /// </summary>
 public static class NetworkHintService
 {
@@ -478,6 +484,26 @@ public static class NetworkHintService
         return hints.Where(h => seen.Add(h.Address)).ToList();
     }
 
+    private static readonly HashSet<string> GuestKinds = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "wsl", "wsb", "vm", "hyperv",
+    };
+
+    /// <summary>
+    /// 网关和普通局域网设备走 ARP/DNS，可以直接展示；
+    /// wsl / wsb / vm / hyperv 必须由对应探测确认正在运行后才允许展示，
+    /// 避免把虚拟交换机上的残留邻居当成可代理目标。
+    /// </summary>
+    public static IReadOnlyList<AddressHint> FilterUnconfirmedGuests(
+        IReadOnlyList<AddressHint> hints)
+    {
+        return hints
+            .Where(h => h.Confirmed
+                || h.Kind is null
+                || !GuestKinds.Contains(h.Kind))
+            .ToList();
+    }
+
     private static void AddSandboxHints(
         IReadOnlyList<AddressHint> baseHints,
         Task<IReadOnlyList<AddressHint>> vmTask,
@@ -546,6 +572,7 @@ public static class NetworkHintService
                 Detail = string.Join(" · ", detailParts),
                 Kind = "wsb",
                 Id = sandboxName ?? "WindowsSandbox",
+                Confirmed = true,
             });
         }
     }
@@ -796,7 +823,8 @@ public static class NetworkHintService
                         "镜像网络",
                         detail,
                         Kind: "wsl",
-                        Id: distroLabel ?? "WSL"),
+                        Id: distroLabel ?? "WSL",
+                        Confirmed: true),
                 };
             }
 
@@ -823,7 +851,8 @@ public static class NetworkHintService
                     source,
                     "NAT 虚拟网络",
                     Kind: "wsl",
-                    Id: source))
+                    Id: source,
+                    Confirmed: true))
                 .ToList();
         }
         catch (Exception ex)
@@ -933,9 +962,9 @@ public static class NetworkHintService
                 if (vmName.Equals(Environment.MachineName, StringComparison.OrdinalIgnoreCase)) continue;
 
                 states.TryGetValue(vmName, out var state);
-                // 已关闭的虚拟机在 ARP 里的地址可能已经分给别的设备，不能拿来当目标
-                if (!string.IsNullOrEmpty(state)
-                    && !state.Equals("Running", StringComparison.OrdinalIgnoreCase))
+                // 只保留 Get-VM 明确报告 Running 的虚拟机。
+                // 已关闭 / 未知状态在 ARP 里的地址可能已经分给别的设备。
+                if (!string.Equals(state, "Running", StringComparison.OrdinalIgnoreCase))
                     continue;
 
                 var mac = NormalizeMac(JsonString(nic, "MacAddress"));
@@ -986,7 +1015,8 @@ public static class NetworkHintService
                         detail,
                         mac,
                         isSandbox ? "wsb" : "hyperv",
-                        vmName));
+                        vmName,
+                        Confirmed: true));
                 }
             }
 
@@ -1045,7 +1075,12 @@ public static class NetworkHintService
 
         return candidates
             .Where(h => byMac.ContainsKey(h.Mac!))
-            .Select(h => h with { Kind = "vm", Id = byMac[h.Mac!] })
+            .Select(h => h with
+            {
+                Kind = "vm",
+                Id = byMac[h.Mac!],
+                Confirmed = true,
+            })
             .ToList();
     }
 

@@ -145,6 +145,9 @@ public static class GuestHintCache
         IReadOnlyList<AddressHint> names,
         IReadOnlyList<AddressHint> baseHints)
     {
+        // 网关/局域网设备可以直接用 ARP；虚拟机/沙盒必须由探测确认运行中
+        baseHints = NetworkHintService.FilterUnconfirmedGuests(baseHints);
+
         // 优先级：WSL > 已识别的沙盒/Hyper-V > 反向解析出的设备名 > 原始网关/ARP 邻居
         var merged = new List<AddressHint>();
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);

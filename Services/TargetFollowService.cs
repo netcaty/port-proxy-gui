@@ -367,10 +367,11 @@ public static class TargetFollowService
         var cached = await GuestHintCache.RefreshNowAsync(forceRefresh).ConfigureAwait(false);
         cancellationToken.ThrowIfCancellationRequested();
 
-        // 缓存里有更准确的 WSL / Hyper-V 身份；再补上 ARP 邻居里的虚拟机，
-        // 让没装 vmrun / VBoxManage 的环境也能按 MAC 跟随。
-        var baseHints = await Task.Run(() => NetworkHintService.GetHints(), cancellationToken)
-            .ConfigureAwait(false);
+        // 缓存里是已确认运行中的 WSL / Hyper-V / 沙盒 / 虚拟机；
+        // ARP 邻居只补充网关和局域网设备，未确认的虚拟邻居不参与跟随。
+        var baseHints = NetworkHintService.FilterUnconfirmedGuests(
+            await Task.Run(() => NetworkHintService.GetHints(), cancellationToken)
+                .ConfigureAwait(false));
 
         var merged = new List<AddressHint>();
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
