@@ -440,14 +440,24 @@ public sealed class EntryDialog : Form
         if (choice?.Target is null)
         {
             _connectAddress.Enabled = true;
+            _connectAddress.SelectionStart = 0;
+            _connectAddress.SelectionLength = 0;
             return;
         }
 
-        if (choice.Hint?.Address is { Length: > 0 } address)
-            SetConnectAddress(address);
-
-        // 跟随状态下地址由探测结果决定，避免手改后与跟随规则打架
+        // 跟随状态下地址由探测结果决定，避免手改后与跟随规则打架。
+        // 先禁用再填地址：禁用后的 ComboBox 不再维护"光标在末尾"的横向滚动。
         _connectAddress.Enabled = false;
+
+        if (choice.Hint?.Address is { Length: > 0 } address)
+        {
+            SetConnectAddress(address);
+        }
+        else
+        {
+            _connectAddress.SelectionStart = 0;
+            _connectAddress.SelectionLength = 0;
+        }
     }
 
     private async Task RefreshFollowChoicesAsync()
@@ -695,7 +705,18 @@ public sealed class EntryDialog : Form
     private void SetConnectAddress(string address)
     {
         _connectAddress.Text = address;
-        _connectAddress.SelectionStart = _connectAddress.Text.Length;
+
+        // ComboBox 从长下拉文本（"IP - type:id"）切回纯 IP 时可能保留横向滚动偏移，
+        // 表现为只看到 IP 的后半段。先把编辑框拉回开头，再决定光标位置。
+        _connectAddress.SelectionStart = 0;
+        _connectAddress.SelectionLength = 0;
+
+        if (_connectAddress.Enabled)
+        {
+            // 手输/可选状态下光标放末尾，方便继续修改；纯 IP 长度足够显示，不会再次滚动。
+            _connectAddress.SelectionStart = address.Length;
+            _connectAddress.SelectionLength = 0;
+        }
     }
 
     /// <summary>
