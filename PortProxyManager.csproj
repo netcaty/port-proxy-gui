@@ -10,8 +10,8 @@
     <RootNamespace>PortProxyManager</RootNamespace>
     <AssemblyName>PortProxyManager</AssemblyName>
     <ApplicationManifest>app.manifest</ApplicationManifest>
-    <Version>1.2.0</Version>
-    <FileVersion>1.2.0.0</FileVersion>
+    <Version>1.2.1</Version>
+    <FileVersion>1.2.1.0</FileVersion>
     <Company>local</Company>
     <Product>PortProxy 管理器</Product>
     <SatelliteResourceLanguages>zh-Hans</SatelliteResourceLanguages>
