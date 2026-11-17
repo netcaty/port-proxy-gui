@@ -426,7 +426,7 @@ public static class NetworkHintService
 
         var vmTask = ProbeHyperVAsync(baseHints, Math.Min(timeoutMs, 8000));
         var vmCliTask = ProbeVmNamesAsync(baseHints, Math.Min(timeoutMs, 8000));
-        var wsbTask = ProbeWindowsSandboxAsync(baseHints, Math.Min(timeoutMs, 6000));
+        var wsbTask = ProbeWindowsSandboxAsync(baseHints, 12000);
         var sandboxRunning = IsWindowsSandboxRunning();
         var sandboxNameTask = sandboxRunning
             ? GetWindowsSandboxNameAsync(Math.Min(timeoutMs, 4000))
@@ -567,11 +567,7 @@ public static class NetworkHintService
         IReadOnlyList<AddressHint> baseHints,
         int timeoutMs)
     {
-        var wsb = FindTool(
-            "wsb.exe",
-            Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                "Microsoft", "WindowsApps", "wsb.exe"));
+        var wsb = FindWindowsSandboxCli();
         if (wsb is null) return Array.Empty<AddressHint>();
 
         try
@@ -579,7 +575,7 @@ public static class NetworkHintService
             var list = await Task.Run(() => ProcRunner.Run(
                 wsb,
                 new[] { "list" },
-                Math.Min(timeoutMs, 2000),
+                Math.Min(timeoutMs, 4000),
                 ProcTextEncoding.Utf8)).ConfigureAwait(false);
             if (!list.Ok) return Array.Empty<AddressHint>();
 
@@ -651,7 +647,7 @@ public static class NetworkHintService
             return (id, ProcRunner.Run(
                 wsb,
                 new[] { "ip", "--id", id, "--raw" },
-                Math.Min(timeoutMs, 5000),
+                Math.Min(timeoutMs, 8000),
                 ProcTextEncoding.Utf8));
         }
         catch (TimeoutException)
@@ -1219,6 +1215,83 @@ public static class NetworkHintService
             }
             return names;
         });
+    }
+
+    private static readonly object SandboxCliGate = new();
+    private static string? _sandboxCliPath;
+    private static DateTime _sandboxCliAtUtc = DateTime.MinValue;
+    private static readonly TimeSpan SandboxCliTtl = TimeSpan.FromMinutes(10);
+
+    /// <summary>
+    /// 找 Windows 沙盒 CLI。优先直接运行包内 wsb.exe：
+    /// App Execution Alias 在提权进程里可能卡住（实测 wsb list 2 秒都不返回），
+    /// 包内 exe 正常约 300 ms。包路径通过 Get-AppxPackage 查询并缓存 10 分钟。
+    /// </summary>
+    private static string? FindWindowsSandboxCli()
+    {
+        lock (SandboxCliGate)
+        {
+            if (_sandboxCliPath is not null
+                && File.Exists(_sandboxCliPath)
+                && DateTime.UtcNow - _sandboxCliAtUtc < SandboxCliTtl)
+                return _sandboxCliPath;
+        }
+
+        var path = ResolveSandboxPackageCli() ?? FindTool(
+            "wsb.exe",
+            Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "Microsoft", "WindowsApps", "wsb.exe"));
+
+        lock (SandboxCliGate)
+        {
+            _sandboxCliPath = path;
+            _sandboxCliAtUtc = DateTime.UtcNow;
+        }
+
+        return path;
+    }
+
+    private static string? ResolveSandboxPackageCli()
+    {
+        try
+        {
+            var ps = PowerShellExe;
+            if (!File.Exists(ps)) return null;
+
+            const string script = """
+                [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false);
+                $ErrorActionPreference = 'SilentlyContinue';
+                (Get-AppxPackage -Name MicrosoftWindows.WindowsSandbox |
+                  Select-Object -First 1).InstallLocation
+                """;
+
+            var result = ProcRunner.Run(
+                ps,
+                new[]
+                {
+                    "-NoProfile", "-NonInteractive", "-NoLogo",
+                    "-ExecutionPolicy", "Bypass", "-Command", script,
+                },
+                3000,
+                ProcTextEncoding.Utf8);
+            if (!result.Ok) return null;
+
+            var location = result.StdOut
+                .Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries)
+                .Select(line => line.Trim().Trim('"'))
+                .LastOrDefault(line => line.Length > 0);
+
+            if (string.IsNullOrWhiteSpace(location)) return null;
+
+            var exe = Path.Combine(location, "wsb.exe");
+            return File.Exists(exe) ? exe : null;
+        }
+        catch (Exception ex)
+        {
+            LogService.Current?.Info($"查找沙盒包内 CLI 跳过：{ex.Message}");
+            return null;
+        }
     }
 
     private static string? FindTool(string fileName, params string[] candidates)
