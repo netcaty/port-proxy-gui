@@ -3,9 +3,8 @@ namespace PortProxyManager.Services;
 /// <summary>
 /// WSL / Hyper-V / Windows 沙盒 / 局域网设备名的探测缓存。
 ///
-/// 下拉打开时先拿缓存立即显示；缓存超过 60 秒才在后台刷新。
-/// 沙盒 / Hyper-V / 设备名先发布一次，WSL 慢探测完成后再合并发布，
-/// UI 通过 Updated 事件增量更新，不需要每次重新启动子进程。
+/// 下拉打开时只读取当前快照，不启动探测；关闭下拉后才在后台刷新，
+/// 下次打开生效。缓存有效期 60 秒，避免每次打开都重启子进程。
 /// </summary>
 public static class GuestHintCache
 {
@@ -15,9 +14,6 @@ public static class GuestHintCache
     private static List<AddressHint> _hints = new();
     private static DateTime _refreshedAtUtc = DateTime.MinValue;
     private static bool _refreshing;
-
-    /// <summary>后台刷新完成（可能分两次：先快速结果，再 WSL）。在后台线程触发。</summary>
-    public static event Action? Updated;
 
     public static IReadOnlyList<AddressHint> Snapshot
     {
@@ -118,14 +114,5 @@ public static class GuestHintCache
         if (merged.Count > 0)
             LogService.Current?.Info("地址候选更新：" +
                 string.Join("；", merged.Select(h => h.Display)));
-
-        try
-        {
-            Updated?.Invoke();
-        }
-        catch (Exception ex)
-        {
-            LogService.Current?.Warn($"地址探测通知失败：{ex.Message}");
-        }
     }
 }

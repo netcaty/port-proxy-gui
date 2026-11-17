@@ -1,3 +1,5 @@
+using System.Net;
+using System.Net.Sockets;
 using PortProxyManager.Models;
 using PortProxyManager.Services;
 
@@ -17,7 +19,10 @@ public sealed class EntryDialog : Form
     private readonly ComboBox _connectAddress = new();
     private readonly ToolTip _tip = new();
     private List<AddressHint> _addressHints = new();
-    private List<AddressHint> _guestHints = new();
+    private string? _pendingSelectionAddress;
+    private string? _pendingSelectionDisplay;
+    private int _populateVersion;
+    private int _selectionVersion;
     private readonly System.Windows.Forms.Timer _guestRefreshTimer = new() { Interval = 30_000 };
     private bool _populatingHints;
     private readonly NumericUpDown _connectPort = new();
@@ -54,9 +59,11 @@ public sealed class EntryDialog : Form
         LoadValues();
         UpdatePreview();
 
-        _guestHints = GuestHintCache.Snapshot.ToList();
-        GuestHintCache.Updated += OnGuestHintsUpdated;
-        _guestRefreshTimer.Tick += (_, _) => GuestHintCache.RefreshIfStale();
+        _guestRefreshTimer.Tick += (_, _) =>
+        {
+            // 打开下拉期间不刷新；关闭后才在后台更新缓存
+            if (!_connectAddress.DroppedDown) GuestHintCache.RefreshIfStale();
+        };
 
         // 句柄创建后控件才有真实宽度，这时再按内容定高一次
         Shown += (_, _) => ResizePreview();
@@ -125,10 +132,11 @@ public sealed class EntryDialog : Form
         _connectAddress.Anchor = AnchorStyles.Left | AnchorStyles.Right;
         _connectAddress.TextChanged += (_, _) => UpdatePreview();
         _connectAddress.DropDown += (_, _) => PopulateAddressHints();
-        _connectAddress.SelectedIndexChanged += (_, _) => ApplySelectedHint();
+        // 只有在用户真正从下拉里选中时才回填，程序填充 Items 不应覆盖手输地址
+        _connectAddress.SelectionChangeCommitted += (_, _) => ApplySelectedHint();
+        _connectAddress.DropDownClosed += (_, _) => OnAddressDropDownClosed();
         _tip.SetToolTip(_connectAddress,
-            "可直接输入 IP；下拉列出默认网关、WSL、Hyper-V/沙盒(WSB)/VMware 虚拟机与局域网设备，" +
-            "能解析到名称的会显示设备名；结果缓存并定期刷新");
+            "可直接输入ip或选择自动探测到的虚拟机、局域网设备");
         _connectPort.Minimum = 1;
         _connectPort.Maximum = 65535;
         _connectPort.Value = 80;
@@ -323,8 +331,8 @@ public sealed class EntryDialog : Form
 
     /// <summary>
     /// 填充目标地址候选。网关和 ARP 邻居同步取，很快；
-    /// WSL / Hyper-V / 沙盒 / 设备名来自带 TTL 的后台缓存，
-    /// 下拉打开时先显示缓存，过期再在后台刷新。
+    /// WSL / Hyper-V / 沙盒 / 设备名来自缓存快照。
+    /// 打开下拉时只读当前快照，不启动探测；关闭后才在后台刷新。
     /// </summary>
     private void PopulateAddressHints()
     {
@@ -334,24 +342,59 @@ public sealed class EntryDialog : Form
         try
         {
             var current = _connectAddress.Text;
+            var selectionStart = _connectAddress.SelectionStart;
+            var populateVersion = ++_populateVersion;
+            var selectionVersion = _selectionVersion;
 
-            // 事件可能因为窗口未就绪没有落到 UI，这里每次都以缓存快照为准
-            _guestHints = GuestHintCache.Snapshot.ToList();
+            // 先清掉上一次的选择，否则重建 Items 后原生控件可能按旧索引
+            // 重新选中一项，把编辑框改成整条展示文本。
+            _connectAddress.SelectedIndex = -1;
+
+            // 打开下拉只读取当前缓存快照，不在这里启动探测
+            var guestHints = GuestHintCache.Snapshot;
 
             var merged = new List<AddressHint>();
             var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
-            foreach (var hint in _guestHints.Concat(NetworkHintService.GetHints()))
+            foreach (var hint in guestHints.Concat(NetworkHintService.GetHints()))
                 if (seen.Add(hint.Address)) merged.Add(hint);
 
             _addressHints = merged;
+
+            // 旧状态可能是整条"IP · 说明"，还原成纯 IP 再保留
+            if (TryExtractAddress(current) is { } extracted) current = extracted;
 
             _connectAddress.BeginUpdate();
             _connectAddress.Items.Clear();
             foreach (var hint in merged) _connectAddress.Items.Add(hint.Display);
             _connectAddress.EndUpdate();
 
-            if (current.Length > 0) _connectAddress.Text = current;
+            // Items 重建后控件可能自动选中第一项；先清掉选择，再恢复用户手输的内容
+            _connectAddress.SelectedIndex = -1;
+            if (current.Length > 0)
+            {
+                _connectAddress.Text = current;
+                _connectAddress.SelectionStart = Math.Min(selectionStart, current.Length);
+            }
+
+            // 原生 ComboBox 在下拉打开后，会把与某项展示文本前缀匹配的输入
+            // 自动补全成整条展示文本（例如手输 IP 恰好是列表里某项的开头）。
+            // 等它处理完这一轮消息后再恢复纯 IP；期间若用户已选中某项则不再覆盖。
+            BeginInvoke(new Action(() =>
+            {
+                if (IsDisposed || !_connectAddress.DroppedDown) return;
+                if (populateVersion != _populateVersion || selectionVersion != _selectionVersion) return;
+
+                var text = _connectAddress.Text;
+                var isNativeDisplay = _addressHints.Any(h =>
+                    string.Equals(h.Display, text, StringComparison.Ordinal))
+                    || TryExtractAddress(text) is not null;
+                if (!isNativeDisplay) return;
+
+                _connectAddress.SelectedIndex = -1;
+                _connectAddress.Text = current;
+                _connectAddress.SelectionStart = Math.Min(selectionStart, current.Length);
+            }));
 
             ResizeAddressDropDown(merged);
         }
@@ -363,44 +406,15 @@ public sealed class EntryDialog : Form
         {
             _populatingHints = false;
         }
-
-        if (!_guestRefreshTimer.Enabled) _guestRefreshTimer.Start();
-        GuestHintCache.RefreshIfStale();
     }
 
-    private void OnGuestHintsUpdated()
+    private void OnAddressDropDownClosed()
     {
-        if (IsDisposed) return;
+        NormalizeCommittedSelection();
 
-        if (InvokeRequired)
-        {
-            try
-            {
-                BeginInvoke(new Action(OnGuestHintsUpdated));
-            }
-            catch
-            {
-                // 窗口正在关闭
-            }
-            return;
-        }
-
-        if (IsDisposed) return;
-
-        var snapshot = GuestHintCache.Snapshot;
-        if (_guestHints.Select(h => h.Display)
-            .SequenceEqual(snapshot.Select(h => h.Display), StringComparer.Ordinal))
-            return;
-
-        _guestHints = snapshot.ToList();
-
-        // 下拉还开着就把新条目补进去
-        if (_connectAddress.DroppedDown)
-        {
-            _connectAddress.DroppedDown = false;
-            PopulateAddressHints();
-            _connectAddress.DroppedDown = true;
-        }
+        // 打开期间不刷新；关闭后在后台更新，下次打开生效
+        if (!_guestRefreshTimer.Enabled) _guestRefreshTimer.Start();
+        GuestHintCache.RefreshIfStale();
     }
 
     /// <summary>按最长一条的内容加宽下拉，否则设备名 / 虚拟机名会被截断。</summary>
@@ -445,8 +459,77 @@ public sealed class EntryDialog : Form
         var index = _connectAddress.SelectedIndex;
         if (index < 0 || index >= _addressHints.Count) return;
 
-        _connectAddress.Text = _addressHints[index].Address;
+        var hint = _addressHints[index];
+        _selectionVersion++;
+        _pendingSelectionAddress = hint.Address;
+        _pendingSelectionDisplay = hint.Display;
+
+        SetConnectAddress(hint.Address);
+
+        // 原生 ComboBox 在提交/关闭时会再把编辑框改成整条 Display 文本，
+        // 这里先排一次恢复；DropDownClosed 里再兜底一次。
+        BeginInvoke(new Action(() =>
+        {
+            if (IsDisposed) return;
+            NormalizeCommittedSelectionCore(consume: false);
+        }));
+    }
+
+    private void NormalizeCommittedSelection()
+    {
+        if (_pendingSelectionAddress is null) return;
+
+        BeginInvoke(new Action(() =>
+        {
+            if (IsDisposed) return;
+            NormalizeCommittedSelectionCore(consume: true);
+        }));
+    }
+
+    /// <summary>
+    /// 把编辑框从"IP · 说明（来源）"整条展示文本恢复成纯 IP。
+    /// 用户自己改了别的内容时不覆盖；consume 表示这次是最终收尾。
+    /// </summary>
+    private void NormalizeCommittedSelectionCore(bool consume)
+    {
+        var address = _pendingSelectionAddress;
+        if (address is null) return;
+
+        var display = _pendingSelectionDisplay;
+        var text = _connectAddress.Text;
+        var looksNative = text.Length == 0
+            || text == address
+            || (display is not null && text == display);
+
+        if (looksNative) SetConnectAddress(address);
+
+        if (consume)
+        {
+            _pendingSelectionAddress = null;
+            _pendingSelectionDisplay = null;
+        }
+    }
+
+    private void SetConnectAddress(string address)
+    {
+        _connectAddress.Text = address;
         _connectAddress.SelectionStart = _connectAddress.Text.Length;
+    }
+
+    /// <summary>
+    /// 兼容旧状态：如果输入框里已经是"IP · 说明（来源）"的整条文本，
+    /// 取回前面的纯 IP，避免下次打开下拉时把说明也当成地址保留。
+    /// </summary>
+    private static string? TryExtractAddress(string text)
+    {
+        var separator = text.IndexOf("  ·  ", StringComparison.Ordinal);
+        if (separator <= 0) return null;
+
+        var candidate = text[..separator].Trim();
+        return IPAddress.TryParse(candidate, out var ip)
+            && ip.AddressFamily == AddressFamily.InterNetwork
+            ? candidate
+            : null;
     }
 
     /// <summary>
@@ -589,7 +672,6 @@ public sealed class EntryDialog : Form
     {
         if (disposing)
         {
-            GuestHintCache.Updated -= OnGuestHintsUpdated;
             _guestRefreshTimer.Stop();
             _guestRefreshTimer.Dispose();
             _tip.Dispose();
