@@ -18,6 +18,18 @@ public static class NetshRunner
     public static ProcResult RunQuiet(params string[] args) =>
         RunQuiet((IReadOnlyList<string>)args);
 
+    public static ProcResult RunQuiet(int timeoutMs, params string[] args)
+    {
+        try
+        {
+            return ProcRunner.Run(NetshPath, args, timeoutMs);
+        }
+        catch (Exception ex)
+        {
+            return new ProcResult(-1, string.Empty, ex.Message);
+        }
+    }
+
     public static ProcResult RunQuiet(IReadOnlyList<string> args)
     {
         try

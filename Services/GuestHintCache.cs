@@ -13,7 +13,6 @@ public static class GuestHintCache
 
     private static List<AddressHint> _hints = new();
     private static DateTime _refreshedAtUtc = DateTime.MinValue;
-    private static bool _refreshing;
     private static Task? _refreshTask;
 
     public static IReadOnlyList<AddressHint> Snapshot
@@ -27,46 +26,59 @@ public static class GuestHintCache
     /// <summary>
     /// 缓存过期时启动一次后台刷新。正在刷新或缓存仍新鲜时直接返回。
     /// </summary>
-    public static void RefreshIfStale(bool force = false)
+    public static void RefreshIfStale(bool force = false) => EnsureRefresh(force);
+
+    /// <summary>
+    /// 等待一次刷新完成，供目标跟随在写映射前拿到最新地址。
+    /// force=true 时保证结果来自本次调用开始之后的探测：如果只能加入一个
+    /// 已经在跑的任务，会在它结束后再补一次刷新。
+    /// </summary>
+    public static async Task<IReadOnlyList<AddressHint>> RefreshNowAsync(bool force = false)
+    {
+        var started = EnsureRefresh(force);
+        await AwaitCurrentAsync().ConfigureAwait(false);
+
+        if (force && !started)
+        {
+            EnsureRefresh(force: true);
+            await AwaitCurrentAsync().ConfigureAwait(false);
+        }
+
+        return Snapshot;
+    }
+
+    /// <summary>返回是否真的启动了一次新刷新。</summary>
+    private static bool EnsureRefresh(bool force)
     {
         lock (Gate)
         {
-            if (_refreshTask is not null) return;
+            if (_refreshTask is not null) return false;
 
             if (!force
                 && _refreshedAtUtc != DateTime.MinValue
                 && DateTime.UtcNow - _refreshedAtUtc < Ttl)
-                return;
+                return false;
 
-            _refreshing = true;
             _refreshTask = Task.Run(RefreshAsync);
+            return true;
         }
     }
 
-    /// <summary>
-    /// 等待一次刷新完成（正在刷新就复用同一任务），供目标跟随在写映射前拿到最新地址。
-    /// force=false 时仍受 60 秒缓存约束。
-    /// </summary>
-    public static async Task<IReadOnlyList<AddressHint>> RefreshNowAsync(bool force = false)
+    private static async Task AwaitCurrentAsync()
     {
-        RefreshIfStale(force);
-
         Task? task;
         lock (Gate) task = _refreshTask;
 
-        if (task is not null)
-        {
-            try
-            {
-                await task.ConfigureAwait(false);
-            }
-            catch
-            {
-                // RefreshAsync 自己会记录异常，这里只负责等待
-            }
-        }
+        if (task is null) return;
 
-        return Snapshot;
+        try
+        {
+            await task.ConfigureAwait(false);
+        }
+        catch
+        {
+            // RefreshAsync 自己会记录异常，这里只负责等待
+        }
     }
 
     private static async Task RefreshAsync()
@@ -96,7 +108,6 @@ public static class GuestHintCache
         {
             lock (Gate)
             {
-                _refreshing = false;
                 _refreshTask = null;
             }
         }

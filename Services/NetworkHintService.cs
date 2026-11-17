@@ -43,9 +43,9 @@ public sealed record AddressHint(
 /// 局域网设备名通过系统反向解析（DNS / mDNS）补充。
 /// 有管理员权限时再问 Hyper-V（Get-VMNetworkAdapter）换出虚拟机名称，
 /// WSL 的客户机 IP 只能问 wsl.exe（宿主机看不到）。
-/// Windows 沙盒没有公开的查询接口，只能结合 Default Switch、微软 OUI
-/// 和 WindowsSandbox 进程窗口做启发式判断，并从进程命令行取出 .wsb 文件名，
-/// 因此标注为"疑似"。
+/// 新版 Windows 沙盒自带 wsb CLI，用 `wsb list` / `wsb ip --id` 直接取
+/// 运行中沙盒的 IP 和 .wsb 配置名；老版本没有该命令时，再结合 Default Switch、
+/// 微软 OUI 和 WindowsSandbox 进程窗口做启发式判断。
 /// </summary>
 public static class NetworkHintService
 {
@@ -426,6 +426,7 @@ public static class NetworkHintService
 
         var vmTask = ProbeHyperVAsync(baseHints, Math.Min(timeoutMs, 8000));
         var vmCliTask = ProbeVmNamesAsync(baseHints, Math.Min(timeoutMs, 8000));
+        var wsbTask = ProbeWindowsSandboxAsync(baseHints, Math.Min(timeoutMs, 6000));
         var sandboxRunning = IsWindowsSandboxRunning();
         var sandboxNameTask = sandboxRunning
             ? GetWindowsSandboxNameAsync(Math.Min(timeoutMs, 4000))
@@ -433,7 +434,7 @@ public static class NetworkHintService
 
         try
         {
-            await Task.WhenAll(vmTask, vmCliTask, sandboxNameTask).ConfigureAwait(false);
+            await Task.WhenAll(vmTask, vmCliTask, wsbTask, sandboxNameTask).ConfigureAwait(false);
         }
         catch (Exception ex)
         {
@@ -443,7 +444,18 @@ public static class NetworkHintService
         var sandboxName = sandboxNameTask.IsCompletedSuccessfully ? sandboxNameTask.Result : null;
         var identified = new List<AddressHint>();
 
-        // VMware / VirtualBox 的 CLI 结果给出确切虚拟机名，优先保留
+        // 新版 wsb CLI 给出的沙盒 IP 最可靠，放在最前面
+        if (wsbTask.IsCompletedSuccessfully)
+        {
+            foreach (var hint in wsbTask.Result)
+            {
+                identified.Add(!string.IsNullOrWhiteSpace(sandboxName)
+                    ? hint with { Id = sandboxName, Source = sandboxName }
+                    : hint);
+            }
+        }
+
+        // VMware / VirtualBox 的 CLI 结果给出确切虚拟机名，其次保留
         if (vmCliTask.IsCompletedSuccessfully) identified.AddRange(vmCliTask.Result);
 
         if (vmTask.IsCompletedSuccessfully)
@@ -457,9 +469,10 @@ public static class NetworkHintService
             }
         }
 
-        // 沙盒没有查询接口：正在运行且该地址未被已知的 Hyper-V 虚拟机认领，
-        // 才把 Default Switch 上的微软 OUI 设备标成"疑似"。
-        if (sandboxRunning)
+        // wsb CLI 已给出权威地址时不再做 ARP 启发式，避免同一沙盒出现两条；
+        // 老版本没有 wsb 命令、或命令超时失败时，才走原来的兜底逻辑。
+        var hasWsbHints = wsbTask.IsCompletedSuccessfully && wsbTask.Result.Count > 0;
+        if (sandboxRunning && !hasWsbHints)
         {
             AddSandboxHints(baseHints, vmTask, sandboxName, identified);
         }
@@ -543,6 +556,177 @@ public static class NetworkHintService
                 Id = sandboxName ?? "WindowsSandbox",
             });
         }
+    }
+
+    /// <summary>
+    /// 新版 Windows 沙盒自带 wsb CLI，用 `wsb list` 列出运行中的沙盒 ID，
+    /// 再用 `wsb ip --id` 直接取 IPv4 地址，比 ARP + 微软 OUI 猜测可靠。
+    /// 老版本没有该命令时返回空，由 AddSandboxHints 的启发式兜底。
+    /// </summary>
+    private static async Task<IReadOnlyList<AddressHint>> ProbeWindowsSandboxAsync(
+        IReadOnlyList<AddressHint> baseHints,
+        int timeoutMs)
+    {
+        var wsb = FindTool(
+            "wsb.exe",
+            Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "Microsoft", "WindowsApps", "wsb.exe"));
+        if (wsb is null) return Array.Empty<AddressHint>();
+
+        try
+        {
+            var list = await Task.Run(() => ProcRunner.Run(
+                wsb,
+                new[] { "list" },
+                Math.Min(timeoutMs, 2000),
+                ProcTextEncoding.Utf8)).ConfigureAwait(false);
+            if (!list.Ok) return Array.Empty<AddressHint>();
+
+            var ids = ParseSandboxIds(list.StdOut);
+            if (ids.Count == 0) return Array.Empty<AddressHint>();
+
+            var tasks = ids
+                .Take(8)
+                .Select(id => Task.Run(() => QuerySandboxIp(wsb, id, timeoutMs)))
+                .ToList();
+
+            try
+            {
+                await Task.WhenAll(tasks).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                LogService.Current?.Info($"查询沙盒 IP 失败：{ex.Message}");
+            }
+
+            var localIps = new HashSet<string>(
+                EnumerateLocalNetwork().Adapters.Select(a => a.Address),
+                StringComparer.OrdinalIgnoreCase);
+
+            var hints = new List<AddressHint>();
+            foreach (var task in tasks)
+            {
+                if (!task.IsCompletedSuccessfully) continue;
+
+                var (id, result) = task.Result;
+                if (result is null || !result.Ok) continue;
+
+                var ips = ExtractIpv4Addresses(result.StdOut)
+                    .Where(ip => !localIps.Contains(ip))
+                    .ToList();
+                if (ips.Count == 0) continue;
+
+                var primary = ChooseSandboxPrimaryIp(ips, baseHints);
+                var known = baseHints.FirstOrDefault(h =>
+                    string.Equals(h.Address, primary, StringComparison.OrdinalIgnoreCase));
+
+                hints.Add(new AddressHint(
+                    primary,
+                    "Windows 沙盒",
+                    known?.Source,
+                    $"沙盒 ID {id}",
+                    known?.Mac,
+                    "wsb",
+                    id));
+            }
+
+            return Deduplicate(hints);
+        }
+        catch (Exception ex)
+        {
+            LogService.Current?.Info($"查询 Windows 沙盒 IP 跳过：{ex.Message}");
+            return Array.Empty<AddressHint>();
+        }
+    }
+
+    /// <summary>单个沙盒的 IP 查询；超时就放弃，不影响其他沙盒和兜底逻辑。</summary>
+    private static (string Id, ProcResult? Result) QuerySandboxIp(
+        string wsb,
+        string id,
+        int timeoutMs)
+    {
+        try
+        {
+            return (id, ProcRunner.Run(
+                wsb,
+                new[] { "ip", "--id", id, "--raw" },
+                Math.Min(timeoutMs, 5000),
+                ProcTextEncoding.Utf8));
+        }
+        catch (TimeoutException)
+        {
+            LogService.Current?.Info($"读取沙盒 {id} 的 IP 超时，跳过。");
+            return (id, null);
+        }
+        catch (Exception ex)
+        {
+            LogService.Current?.Info($"读取沙盒 {id} 的 IP 失败：{ex.Message}");
+            return (id, null);
+        }
+    }
+
+    private static readonly Regex SandboxIdToken = new(
+        @"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}",
+        RegexOptions.Compiled);
+
+    private static readonly Regex Ipv4Token = new(
+        @"(?<![\d.])(?:\d{1,3}\.){3}\d{1,3}(?![\d.])",
+        RegexOptions.Compiled);
+
+    private static List<string> ParseSandboxIds(string text)
+    {
+        var result = new List<string>();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (Match match in SandboxIdToken.Matches(text))
+            if (seen.Add(match.Value)) result.Add(match.Value);
+
+        return result;
+    }
+
+    /// <summary>
+    /// 从 wsb 的 JSON / 纯文本输出里提取 IPv4。JSON 字段名随版本变化
+    /// （ipV4Address / ipV4Addresses），直接扫描字符串更稳。
+    /// </summary>
+    private static List<string> ExtractIpv4Addresses(string text)
+    {
+        var result = new List<string>();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (Match match in Ipv4Token.Matches(text))
+        {
+            if (!IPAddress.TryParse(match.Value, out var ip)) continue;
+            if (ip.AddressFamily != AddressFamily.InterNetwork) continue;
+            if (IsUseless(ip)) continue;
+
+            var textIp = ip.ToString();
+            if (seen.Add(textIp)) result.Add(textIp);
+        }
+
+        return result;
+    }
+
+    /// <summary>沙盒有多块网卡时优先选 Default Switch 上的地址。</summary>
+    private static string ChooseSandboxPrimaryIp(
+        IReadOnlyList<string> ips,
+        IReadOnlyList<AddressHint> baseHints)
+    {
+        foreach (var ip in ips)
+        {
+            var known = baseHints.FirstOrDefault(h =>
+                string.Equals(h.Address, ip, StringComparison.OrdinalIgnoreCase));
+            if (known is not null && LooksLikeDefaultSwitch(known)) return ip;
+        }
+
+        foreach (var ip in ips)
+        {
+            if (baseHints.Any(h =>
+                string.Equals(h.Address, ip, StringComparison.OrdinalIgnoreCase)))
+                return ip;
+        }
+
+        return ips[0];
     }
 
     /// <summary>

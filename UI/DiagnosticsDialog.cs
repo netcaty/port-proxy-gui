@@ -161,7 +161,7 @@ public sealed class DiagnosticsDialog : Form
         _running = true;
         _rerunButton.Enabled = false;
         _copyButton.Enabled = false;
-        _actions.Controls.Clear();
+        ClearActionButtons();
         _list.Items.Clear();
         _summary.Text = "正在诊断…";
         _summary.ForeColor = SystemColors.GrayText;
@@ -240,7 +240,7 @@ public sealed class DiagnosticsDialog : Form
             _list.EndUpdate();
         }
 
-        _actions.Controls.Clear();
+        ClearActionButtons();
 
         foreach (var check in report.Checks
                      .Where(c => c.Action != DiagnosticAction.None)
@@ -283,6 +283,16 @@ public sealed class DiagnosticsDialog : Form
         {
             MessageBox.Show(this, $"复制失败：{ex.Message}", "诊断", MessageBoxButtons.OK,
                 MessageBoxIcon.Warning);
+        }
+    }
+
+    private void ClearActionButtons()
+    {
+        while (_actions.Controls.Count > 0)
+        {
+            var control = _actions.Controls[0];
+            _actions.Controls.RemoveAt(0);
+            control.Dispose();
         }
     }
 

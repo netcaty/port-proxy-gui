@@ -115,9 +115,12 @@ public static class TargetFollowService
     {
         if (hint.Kind is not ("wsl" or "hyperv" or "wsb" or "vm")) return false;
 
-        // WSL 没有 MAC，用发行版名做标识；虚拟机优先用 MAC。
-        return hint.Kind == "wsl"
-               || !string.IsNullOrWhiteSpace(hint.Mac)
+        // WSL 没有 MAC，用发行版名做标识；只有 MAC 的 ARP 邻居无法稳定认回发行版。
+        if (hint.Kind == "wsl")
+            return !string.IsNullOrWhiteSpace(hint.Id) && !LooksLikeMacId(hint.Id);
+
+        // 虚拟机优先用 MAC，其次用名字。
+        return !string.IsNullOrWhiteSpace(hint.Mac)
                || !string.IsNullOrWhiteSpace(hint.Id);
     }
 
@@ -139,6 +142,9 @@ public static class TargetFollowService
             var targetId = FollowTarget.Clean(target.Id);
             var hintId = FollowTarget.Clean(hint.Id);
 
+            // 只有 MAC 的 ARP 邻居不能当成某个 WSL 发行版
+            if (hintId is null || LooksLikeMacId(hintId)) return false;
+
             // 早期探测拿不到发行版名时 Id 是通用的 "WSL"，此时接受任意 WSL 结果。
             if (targetId is null || targetId.Equals("WSL", StringComparison.OrdinalIgnoreCase))
                 return true;
@@ -157,6 +163,13 @@ public static class TargetFollowService
 
         var targetName = FollowTarget.Clean(target.Id);
         var hintName = FollowTarget.Clean(hint.Id);
+
+        // Id 本身可能就是 MAC（VMware/VirtualBox 的 ARP 兜底），格式不同也要能对上
+        var targetNameMac = NormalizeMac(targetName);
+        var hintNameMac = NormalizeMac(hintName);
+        if (targetNameMac is not null && hintNameMac is not null)
+            return string.Equals(targetNameMac, hintNameMac, StringComparison.Ordinal);
+
         return targetName is not null
                && hintName is not null
                && string.Equals(targetName, hintName, StringComparison.OrdinalIgnoreCase);
@@ -225,6 +238,38 @@ public static class TargetFollowService
         var items = new List<FollowSyncItem>();
         if (targets.Count == 0) return new FollowSyncReport(items);
 
+        // 映射可能已被外部删除；跟随不能把它悄悄重建回来。
+        var registry = RegistryReader.ReadAll(out var readError);
+        if (readError is not null)
+        {
+            foreach (var target in targets)
+            {
+                items.Add(new FollowSyncItem(target.Entry, target.Target, null,
+                    FollowSyncStatus.Failed, $"读取注册表失败：{readError}"));
+            }
+
+            return new FollowSyncReport(items);
+        }
+
+        var currentByKey = new Dictionary<string, PortProxyEntry>(StringComparer.OrdinalIgnoreCase);
+        foreach (var item in registry) currentByKey.TryAdd(item.Key, item);
+
+        var pending = new List<(PortProxyEntry Entry, FollowTarget Target)>();
+        foreach (var target in targets)
+        {
+            if (!currentByKey.ContainsKey(target.Entry.Key))
+            {
+                items.Add(new FollowSyncItem(target.Entry, target.Target, null,
+                    FollowSyncStatus.Skipped,
+                    "注册表里已经没有这条映射，跳过跟随（不会自动重建）。"));
+                continue;
+            }
+
+            pending.Add(target);
+        }
+
+        if (pending.Count == 0) return new FollowSyncReport(items);
+
         IReadOnlyList<AddressHint> hints;
         try
         {
@@ -240,7 +285,7 @@ public static class TargetFollowService
             hints = GuestHintCache.Snapshot;
         }
 
-        foreach (var (entry, target) in targets)
+        foreach (var (entry, target) in pending)
         {
             cancellationToken.ThrowIfCancellationRequested();
 
@@ -269,7 +314,10 @@ public static class TargetFollowService
             }
 
             var address = ip.ToString();
-            if (string.Equals(address, entry.NormalizedConnect, StringComparison.OrdinalIgnoreCase))
+            currentByKey.TryGetValue(entry.Key, out var current);
+            var currentTarget = current?.NormalizedConnect ?? entry.NormalizedConnect;
+
+            if (string.Equals(address, currentTarget, StringComparison.OrdinalIgnoreCase))
             {
                 items.Add(new FollowSyncItem(entry, target, address, FollowSyncStatus.UpToDate,
                     $"目标未变化（{address}）。"));
@@ -285,7 +333,7 @@ public static class TargetFollowService
 
             try
             {
-                var previous = entry.NormalizedConnect;
+                var previous = currentTarget;
                 var updated = entry.WithConnection(address, entry.ConnectPort);
 
                 await Task.Run(() => service.Update(entry, updated), cancellationToken)

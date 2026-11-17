@@ -437,6 +437,9 @@ public sealed class MainForm : Form
 
             _rows = entries.Select(e => new EntryRow(e, _meta.Get(e.Key))).ToList();
 
+            // 没有跟随项时清掉历史待同步提示
+            if (_rows.All(r => r.Meta?.IsFollowing != true)) _followPendingCount = 0;
+
             RebuildGroupFilter();
             ApplyFilter(selectedKey);
 
@@ -884,6 +887,8 @@ public sealed class MainForm : Form
             var report = await TargetFollowService.SyncAsync(
                 entries, _service, _elevated, forceRefresh, keys);
 
+            if (IsDisposed) return;
+
             _followPendingCount = report.NeedsElevationCount;
 
             if (report.UpdatedCount > 0)
@@ -940,7 +945,7 @@ public sealed class MainForm : Form
         }
         finally
         {
-            if (manual) Cursor = Cursors.Default;
+            if (manual && !IsDisposed) Cursor = Cursors.Default;
             Interlocked.Exchange(ref _followSyncRunning, 0);
         }
     }

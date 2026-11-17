@@ -349,7 +349,8 @@ public static class DiagnosticsService
         {
             foreach (var nic in NetworkInterface.GetAllNetworkInterfaces())
             {
-                if (nic.OperationalStatus != OperationalStatus.Up) continue;
+                // 不按 OperationalStatus 过滤：网卡暂时断开不代表地址不属于本机，
+                // 绑定是否成功由后面的监听器检查来判断。
                 if (nic.NetworkInterfaceType == NetworkInterfaceType.Loopback) continue;
 
                 foreach (var unicast in nic.GetIPProperties().UnicastAddresses)
@@ -382,4 +383,7 @@ public static class DiagnosticsService
 
     private static DiagnosticCheck Fail(string name, string detail) =>
         new(name, DiagnosticStatus.Fail, detail);
+
+    private static DiagnosticCheck Skip(string name, string detail) =>
+        new(name, DiagnosticStatus.Skip, detail);
 }

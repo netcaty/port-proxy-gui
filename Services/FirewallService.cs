@@ -14,7 +14,7 @@ public static class FirewallService
     public static bool Exists(PortProxyEntry entry)
     {
         var result = NetshRunner.RunQuiet(
-            "advfirewall", "firewall", "show", "rule", $"name={RuleName(entry)}");
+            5000, "advfirewall", "firewall", "show", "rule", $"name={RuleName(entry)}");
         return result.Ok;
     }
 

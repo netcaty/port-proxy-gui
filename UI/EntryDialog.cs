@@ -376,7 +376,7 @@ public sealed class EntryDialog : Form
 
             foreach (var hint in hints)
             {
-                var target = TargetFollowService.FromHint(hint);
+                var target = FollowTarget.FromHint(hint);
                 if (target is null) continue;
 
                 var current = previous is not null && TargetFollowService.Matches(hint, previous);
