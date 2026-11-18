@@ -144,13 +144,16 @@ func main() {
 
 	appService.StartWatcher()
 
-	// 已有实例被再次启动时（--dump 除外），激活旧窗口
+	// 已有实例被再次启动时（--dump/--hints 除外）：静默激活主窗口，
+	// 不弹任何对话框。Focus 把窗口真正带到前台（仅 Show 时 Windows 可能
+	// 只让任务栏闪烁而不切换）。
 	if guard != nil {
 		activateCh := guard.ActivateCh()
 		go func() {
 			for range activateCh {
 				win.Show()
 				win.UnMinimise()
+				win.Focus()
 			}
 		}()
 	}
