@@ -189,6 +189,7 @@ public partial class MainViewModel : ObservableObject
             _deadMappings = FindMappingsNotListening(entries);
             UpdateHelperStatus();
             UpdateBanner();
+            UpdateAutostartState();
         }
         finally
         {
@@ -320,6 +321,15 @@ public partial class MainViewModel : ObservableObject
             _ => "IP Helper：状态未知",
         };
         HelperIsRunning = state == IpHlpState.Running;
+    }
+
+    /// <summary>刷新自启开关的展示（工具栏 + 托盘菜单），30 秒缓存内不重复起进程。</summary>
+    private void UpdateAutostartState()
+    {
+        OnPropertyChanged(nameof(AutostartChecked));
+        OnPropertyChanged(nameof(AutostartText));
+        OnPropertyChanged(nameof(AutostartEnabled));
+        AppRuntime.MainWindow?.UpdateTrayAutostartLabel();
     }
 
     // ---------------------------------------------------------------- 横幅
@@ -589,11 +599,18 @@ public partial class MainViewModel : ObservableObject
     [RelayCommand]
     private void ToggleAutostart() => ToggleAutostartCore();
 
+    /// <summary>托盘双击：恢复窗口并抢前台（TaskbarIcon 是命令模式，无 XAML 事件）。</summary>
+    [RelayCommand]
+    private void TrayDoubleClick() => AppRuntime.MainWindow?.ActivateFromSecondInstance();
+
     [RelayCommand]
     private void ShowLog()
     {
+        // 编辑页打开时不切走，避免丢失未保存的表单内容
+        if (Editor is not null) return;
+
         var dir = LogService.Current?.Dir ?? AppRuntime.Paths.LogDir;
-        _ = LogViewerWindow.ShowAsync(dir);
+        LogRequested?.Invoke(dir);
     }
 
     /// <summary>托盘"重启"：先拉起新实例（带等待标记），再退出当前进程。</summary>
@@ -626,7 +643,22 @@ public partial class MainViewModel : ObservableObject
         AppRuntime.MainWindow?.ForceExit();
     }
 
-    // ---------------------------------------------------------------- 增删改
+    // ---------------------------------------------------------------- 增删改（内嵌编辑页）
+
+    /// <summary>编辑页打开时记录正在编辑的行（null = 新增）。</summary>
+    private EntryRowViewModel? _editingRow;
+
+    /// <summary>请求主窗口显示编辑页。</summary>
+    public event Action<EntryEditViewModel>? EditorRequested;
+
+    /// <summary>请求主窗口收起编辑页。</summary>
+    public event Action? EditorDismissed;
+
+    /// <summary>请求主窗口显示日志页（参数为日志目录）。</summary>
+    public event Action<string>? LogRequested;
+
+    /// <summary>当前打开的内嵌编辑页；null = 列表视图。</summary>
+    public EntryEditViewModel? Editor { get; private set; }
 
     /// <summary>工具栏/右键菜单命令：作用于当前选中行。</summary>
     [RelayCommand]
@@ -639,12 +671,64 @@ public partial class MainViewModel : ObservableObject
     [RelayCommand]
     private async Task AddEntryAsync()
     {
+        if (Editor is not null) return;
         if (!await RequireElevationAsync()) return;
 
-        var (ok, entry, meta, firewall) = await EntryEditWindow.ShowAsync(
-            existing: null, meta: null, _rows.Select(r => r.Entry).ToList());
-        if (!ok || entry is null) return;
+        _editingRow = null;
+        OpenEditor(existing: null, meta: null);
+    }
 
+    public async Task EditEntryAsync(EntryRowViewModel? row = null)
+    {
+        row ??= SelectedRow;
+        if (row is null) return;
+        if (Editor is not null) return;
+        if (!await RequireElevationAsync()) return;
+
+        _editingRow = row;
+        OpenEditor(row.Entry, row.Meta);
+    }
+
+    /// <summary>打开内嵌编辑页，并完成原来独立窗口 Loaded 时做的初始化。</summary>
+    private void OpenEditor(PortProxyEntry? existing, EntryMeta? meta)
+    {
+        var vm = new EntryEditViewModel(existing, meta, _rows.Select(r => r.Entry).ToList());
+        vm.CloseRequested += () => _ = DismissEditorAsync();
+
+        vm.LoadValues();
+        vm.RefreshPreview();
+        vm.PopulateCandidates();
+        _ = vm.RefreshCandidatesWhenReadyAsync();
+
+        Editor = vm;
+        EditorRequested?.Invoke(vm);
+    }
+
+    /// <summary>
+    /// 编辑页关闭（取消或确认）：先切回列表，再按结果执行写入。
+    /// 确认后的处理与原来独立窗口版本一致。
+    /// </summary>
+    private async Task DismissEditorAsync()
+    {
+        var vm = Editor;
+        if (vm is null) return;
+
+        Editor = null;
+        EditorDismissed?.Invoke();
+
+        var row = _editingRow;
+        _editingRow = null;
+
+        if (!vm.Confirmed || vm.Result is null) return;
+
+        if (row is null)
+            await CommitAddAsync(vm.Result, vm.ResultMeta);
+        else
+            await CommitEditAsync(row, vm.Result, vm.ResultMeta);
+    }
+
+    private async Task CommitAddAsync(PortProxyEntry entry, EntryMeta? meta)
+    {
         await RunGuardedAsync("新增映射", () =>
         {
             var added = _service.Add(entry);
@@ -655,7 +739,7 @@ public partial class MainViewModel : ObservableObject
                 AppRuntime.Meta.Save();
             }
 
-            if (firewall)
+            if (meta?.HasFirewallRule == true)
             {
                 var (ruleOk, message) = FirewallService.Add(added);
                 if (!ruleOk) throw new PortProxyException($"映射已创建，但防火墙规则添加失败：{message}");
@@ -667,16 +751,8 @@ public partial class MainViewModel : ObservableObject
         });
     }
 
-    public async Task EditEntryAsync(EntryRowViewModel? row = null)
+    private async Task CommitEditAsync(EntryRowViewModel row, PortProxyEntry updated, EntryMeta? meta)
     {
-        row ??= SelectedRow;
-        if (row is null) return;
-        if (!await RequireElevationAsync()) return;
-
-        var (ok, updated, meta, _) = await EntryEditWindow.ShowAsync(
-            existing: row.Entry, meta: row.Meta, _rows.Select(r => r.Entry).ToList());
-        if (!ok || updated is null) return;
-
         if (row.Entry.SameTarget(updated))
         {
             // 只改了备注
@@ -1069,8 +1145,8 @@ public partial class MainViewModel : ObservableObject
         AppRuntime.UiQueue?.TryEnqueue(() => _networkDebounceTimer?.Start());
     }
 
-    [RelayCommand]
-    private Task SyncFollowAllAsync() =>
+    /// <summary>托盘菜单：同步全部跟随映射。</summary>
+    public Task SyncFollowAllAsync() =>
         SyncFollowTargetsAsync(manual: true, forceRefresh: true);
 
     /// <summary>右键菜单：只同步选中的跟随映射。</summary>

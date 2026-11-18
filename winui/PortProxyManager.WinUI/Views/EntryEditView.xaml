@@ -1,21 +1,47 @@
 <?xml version="1.0" encoding="utf-8" ?>
-<Window
-    x:Class="PortProxyManager.WinUI.Views.EntryEditWindow"
+<UserControl
+    x:Class="PortProxyManager.WinUI.Views.EntryEditView"
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
     xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
     xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
     xmlns:vm="using:PortProxyManager.WinUI.ViewModels"
-    Title="{x:Bind ViewModel.Title, Mode=OneWay}"
     mc:Ignorable="d">
 
     <Grid x:Name="Root" RowSpacing="0">
         <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
             <RowDefinition Height="*" />
             <RowDefinition Height="Auto" />
         </Grid.RowDefinitions>
 
-        <ScrollViewer Grid.Row="0" Padding="16,12,16,4">
+        <!-- 页头：返回列表（与取消等价），标题随新增/编辑变化 -->
+        <Grid
+            Grid.Row="0"
+            Padding="12,8,16,4"
+            ColumnSpacing="8">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="*" />
+            </Grid.ColumnDefinitions>
+            <Button
+                Grid.Column="0"
+                Command="{x:Bind ViewModel.CancelCommand}"
+                ToolTipService.ToolTip="返回列表 (Esc)">
+                <FontIcon FontSize="16" Glyph="&#xE72B;" />
+            </Button>
+            <TextBlock
+                Grid.Column="1"
+                VerticalAlignment="Center"
+                Style="{StaticResource SubtitleTextBlockStyle}"
+                Text="{x:Bind ViewModel.Title, Mode=OneWay}" />
+        </Grid>
+
+        <ScrollViewer
+            Grid.Row="1"
+            Padding="16,6,16,4"
+            HorizontalScrollBarVisibility="Disabled"
+            HorizontalScrollMode="Disabled">
             <StackPanel Spacing="10">
 
                 <!-- 类型 -->
@@ -80,8 +106,7 @@
                         PlaceholderText="手输 IP，或选择网关 / 局域网设备 / WSL / 虚拟机 / 沙盒"
                         SelectionChanged="OnConnectSelectionChanged"
                         TextSubmitted="OnConnectTextSubmitted"
-                        LostFocus="OnConnectLostFocus"
-                        Text="{x:Bind ViewModel.ConnectText, Mode=OneWay}">
+                        LostFocus="OnConnectLostFocus">
                         <ComboBox.ItemTemplate>
                             <DataTemplate x:DataType="vm:CandidateRow">
                                 <TextBlock Text="{x:Bind Display}" />
@@ -213,7 +238,7 @@
 
         <!-- 底部按钮 -->
         <Grid
-            Grid.Row="1"
+            Grid.Row="2"
             Padding="16,10,16,10"
             Background="{ThemeResource LayerFillColorDefaultBrush}"
             BorderBrush="{ThemeResource DividerStrokeColorDefaultBrush}"
@@ -244,4 +269,4 @@
             </Button>
         </Grid>
     </Grid>
-</Window>
+</UserControl>

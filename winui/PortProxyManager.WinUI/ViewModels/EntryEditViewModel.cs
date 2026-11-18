@@ -260,6 +260,11 @@ public partial class EntryEditViewModel : ObservableObject
         }
 
         UpdateFollowToggle();
+
+        // 重建候选集合时 ComboBox 内部文本会被清空（OneWay 绑定不会自动回写），
+        // 主动通知一次，让目标框重新显示当前地址/手输值。
+        OnPropertyChanged(nameof(ConnectText));
+
         UpdatePreview();
     }
 
@@ -317,7 +322,13 @@ public partial class EntryEditViewModel : ObservableObject
         try
         {
             await GuestHintCache.RefreshNowAsync(force: false);
-            PopulateCandidates();
+
+            // 服务层的续体可能不在 UI 线程；重建候选会触碰绑定集合，必须切回
+            var queue = AppRuntime.UiQueue;
+            if (queue is not null && !queue.HasThreadAccess)
+                queue.TryEnqueue(PopulateCandidates);
+            else
+                PopulateCandidates();
         }
         catch (Exception ex)
         {
@@ -500,7 +511,22 @@ public partial class EntryEditViewModel : ObservableObject
         TestResultText = "正在测试…";
         var (ok, detail) = await PortProbe.TestConnectAsync(
             GetCurrentConnectAddress(), (int)Math.Clamp(ConnectPort, 1, 65535));
-        TestResultText = detail;
+
+        // PortProbe 用 ConfigureAwait(false)，续体可能在线程池上；
+        // 绑定属性必须切回 UI 线程更新。
+        SetTestResult(detail);
+    }
+
+    private void SetTestResult(string text)
+    {
+        var queue = AppRuntime.UiQueue;
+        if (queue is not null && !queue.HasThreadAccess)
+        {
+            queue.TryEnqueue(() => TestResultText = text);
+            return;
+        }
+
+        TestResultText = text;
     }
 
     private static string? Trimmed(string value)

@@ -1,11 +1,10 @@
 using CommunityToolkit.Mvvm.ComponentModel;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
-using PortProxyManager.Services;
 
 namespace PortProxyManager.WinUI.Views;
 
-/// <summary>日志查看窗口的轻量状态（文件少、交互简单，不单独建 RelayCommand 集）。</summary>
+/// <summary>日志查看页的轻量状态（文件少、交互简单，不单独建 RelayCommand 集）。</summary>
 public sealed partial class LogViewerViewModel : ObservableObject
 {
     [ObservableProperty]
@@ -16,34 +15,28 @@ public sealed partial class LogViewerViewModel : ObservableObject
 }
 
 /// <summary>
-/// 操作日志窗口（旧版 LogViewerForm）：按天的日志文件下拉 + 内容展示。
-/// 非模态，主窗口可继续操作。
+/// 操作日志页（旧版 LogViewerForm）：按天的日志文件下拉 + 内容展示。
+/// 内嵌在主窗口里显示，通过 <see cref="CloseRequested"/> 返回列表。
 /// </summary>
-public sealed partial class LogViewerWindow : Window
+public sealed partial class LogViewerView : UserControl
 {
     public LogViewerViewModel ViewModel { get; } = new();
 
+    /// <summary>用户点了返回/关闭。</summary>
+    public event EventHandler? CloseRequested;
+
     private readonly string _dir;
 
-    public LogViewerWindow(string logDir)
+    public LogViewerView(string logDir)
     {
         _dir = logDir;
 
         InitializeComponent();
 
-        Title = "操作日志";
-        AppWindow.SetIcon("Assets/AppIcon.ico");
-
         Root.DataContext = ViewModel;
 
-        Root.Loaded += (_, _) =>
-        {
-            AppWindow.Resize(new Windows.Graphics.SizeInt32(
-                (int)Math.Round(880 * AppRuntime.UiScale),
-                (int)Math.Round(560 * AppRuntime.UiScale)));
-
-            LoadFiles();
-        };
+        // 每次打开都重建视图，Loaded 时重新扫描日志文件
+        Loaded += (_, _) => LoadFiles();
     }
 
     private void LoadFiles()
@@ -121,12 +114,6 @@ public sealed partial class LogViewerWindow : Window
         }
     }
 
-    private void OnCloseClicked(object sender, RoutedEventArgs e) => Close();
-
-    public static Task ShowAsync(string logDir)
-    {
-        var window = new LogViewerWindow(logDir);
-        window.Activate();
-        return Task.CompletedTask;
-    }
+    private void OnCloseClicked(object sender, RoutedEventArgs e) =>
+        CloseRequested?.Invoke(this, EventArgs.Empty);
 }
