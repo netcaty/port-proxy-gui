@@ -111,8 +111,10 @@ public static class Cli
                                   %ProgramData%\PortProxyManager。
               --tray              启动后直接最小化到托盘（当前版本暂未实现托盘）。
               --dump              以文本输出当前全部映射后退出（只读，不需要管理员）。
-              --json              与 --dump 一起使用，输出 JSON。
-              --out=<文件>        与 --dump 一起使用，同时把结果写入文件。
+              --hints             探测并输出全部目标地址候选后退出（只读，不需要管理员）。
+                                  包含 WSL / 虚拟机 / 沙盒 / 网关 / 局域网设备。
+              --json              与 --dump / --hints 一起使用，输出 JSON。
+              --out=<文件>        与 --dump / --hints 一起使用，同时把结果写入文件。
               --selftest          运行自检（读取、校验、增删核对），输出 selftest-report.json。
                                   未提权时会先尝试提权；取消 UAC 则只跑只读部分。
               --no-elevate        不自动提权（GUI 只读，写入会提示需要管理员权限）。
@@ -287,6 +289,123 @@ public static class Cli
     }
 
     public static void SafeWriteLine(string text) => SafeWrite(text + Environment.NewLine);
+
+    /// <summary>
+    /// 探测全部目标地址候选并输出（WSL / 虚拟机 / 沙盒 / 网关 / 局域网设备）。
+    /// 只读、不需要管理员、不碰界面，也不受单实例限制，可与 GUI 同时运行。
+    /// </summary>
+    public static async Task<int> Hints(CliOptions options)
+    {
+        EnsureConsole();
+        PrepareEncoding();
+
+        IReadOnlyList<AddressHint> hints;
+        string? probeError = null;
+
+        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+        try
+        {
+            hints = await GuestHintCache.RefreshNowAsync(force: true);
+        }
+        catch (Exception ex)
+        {
+            probeError = ex.Message;
+            hints = Array.Empty<AddressHint>();
+        }
+
+        var elapsedMs = stopwatch.ElapsedMilliseconds;
+
+        var sb = new StringBuilder();
+
+        if (options.Json)
+        {
+            var payload = new
+            {
+                ok = probeError is null,
+                error = probeError,
+                elevated = Elevation.IsElevated,
+                count = hints.Count,
+                elapsedMs,
+                candidates = hints.Select(h => new
+                {
+                    kind = h.Kind,
+                    address = h.Address,
+                    category = h.Category,
+                    id = h.Id,
+                    mac = h.Mac,
+                    source = h.Source,
+                    detail = h.Detail,
+                    display = h.Display,
+                }),
+            };
+
+            sb.AppendLine(JsonIo.Serialize(payload));
+        }
+        else
+        {
+            sb.AppendLine("PortProxy 目标地址候选");
+            sb.AppendLine($"探测耗时：{elapsedMs} ms");
+            sb.AppendLine($"当前权限：{(Elevation.IsElevated ? "管理员" : "普通用户")}");
+
+            if (probeError is not null)
+                sb.AppendLine($"探测错误：{probeError}");
+
+            sb.AppendLine();
+
+            var rows = new List<string[]> { new[] { "类型", "地址", "标识/名称", "MAC", "说明" } };
+
+            foreach (var hint in hints)
+            {
+                var note = string.Join(" · ", new[] { hint.Category, hint.Source, hint.Detail }
+                    .Where(p => !string.IsNullOrWhiteSpace(p)));
+
+                rows.Add(new[]
+                {
+                    hint.Kind ?? "?",
+                    hint.Address,
+                    hint.Id ?? string.Empty,
+                    hint.Mac ?? string.Empty,
+                    note,
+                });
+            }
+
+            var widths = new int[5];
+            foreach (var row in rows)
+                for (var c = 0; c < 5; c++)
+                    widths[c] = Math.Max(widths[c], DisplayWidth(row[c]));
+
+            foreach (var row in rows)
+            {
+                var line = new StringBuilder();
+                for (var c = 0; c < 5; c++)
+                    line.Append(Pad(row[c], widths[c] + 2));
+                sb.AppendLine(line.ToString().TrimEnd());
+            }
+
+            sb.AppendLine();
+            sb.AppendLine($"共 {hints.Count} 条");
+        }
+
+        var output = sb.ToString();
+        SafeWrite(output);
+
+        if (!string.IsNullOrWhiteSpace(options.OutFile))
+        {
+            try
+            {
+                // 输出文件按当前工作目录解析，与 --dump 一致
+                var full = Path.GetFullPath(options.OutFile!);
+                File.WriteAllText(full, output, new UTF8Encoding(false));
+            }
+            catch (Exception ex)
+            {
+                SafeWriteLine($"写入 --out 文件失败：{ex.Message}");
+                return 4;
+            }
+        }
+
+        return probeError is null ? 0 : 5;
+    }
 
     /// <summary>
     /// 早期错误提示（提权取消、数据目录不可用）。XAML 窗口还没起来，

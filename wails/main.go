@@ -27,6 +27,9 @@ import (
 //go:embed all:frontend/dist
 var assets embed.FS
 
+//go:embed build/windows/icon.ico
+var trayIconData []byte
+
 func main() {
 	opts := cli.Parse(os.Args[1:])
 
@@ -170,7 +173,7 @@ func main() {
 func setupSystemTray(app *application.App, win application.Window, svc *AppService,
 	settingsStore *settings.Store, pathsCtx *paths.Context) {
 	tray := app.SystemTray.New()
-	tray.SetLabel("PortProxyManager")
+	tray.SetIcon(trayIconData)
 	tray.SetTooltip("PortProxyManager — netsh portproxy 管理器")
 
 	menu := application.NewMenu()
@@ -201,6 +204,15 @@ func setupSystemTray(app *application.App, win application.Window, svc *AppServi
 				log.Warn("开机自启设置失败：" + r.Message)
 			}
 		}
+	})
+	var closeToTrayItem *application.MenuItem
+	closeToTrayItem = menu.AddCheckbox("关窗进托盘", settingsStore.Value.CloseToTray)
+	closeToTrayItem.OnClick(func(*application.Context) {
+		sv := settingsStore.Value
+		sv.CloseToTray = !sv.CloseToTray
+		settingsStore.Value = sv
+		_ = settingsStore.Save()
+		closeToTrayItem.SetChecked(sv.CloseToTray)
 	})
 	menu.AddSeparator()
 	menu.Add("退出").OnClick(func(*application.Context) {
