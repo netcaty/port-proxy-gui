@@ -7,6 +7,7 @@ internal static class Program
 {
     private const string MutexName = @"Local\PortProxyManager.SingleInstance";
     private const string ActivateEventName = @"Local\PortProxyManager.Activate";
+    internal const string RestartEnvName = "PORTPROXYMANAGER_RESTART";
 
     [STAThread]
     private static async Task<int> Main(string[] args)
@@ -97,7 +98,12 @@ internal static class Program
         var acquired = false;
         try
         {
-            acquired = mutex.WaitOne(0);
+            // 托盘"重启"场景：新实例稍等旧实例退出后再接管，
+            // 避免激活了正在退出的旧窗口导致程序悄悄消失。
+            var restartWait = Environment.GetEnvironmentVariable(RestartEnvName) == "1";
+            Environment.SetEnvironmentVariable(RestartEnvName, null);
+
+            acquired = mutex.WaitOne(restartWait ? 5000 : 0);
         }
         catch (AbandonedMutexException)
         {
@@ -115,15 +121,7 @@ internal static class Program
             }
             catch
             {
-                // 激活失败也不影响提示
-            }
-
-            if (!options.Tray)
-            {
-                Cli.ErrorBox(
-                    "PortProxy 管理器已经在运行，已切换到那个窗口。\n\n" +
-                    "注意：本次启动参数（例如 --data-dir）不会生效，" +
-                    "正在运行的实例使用它自己的数据目录。");
+                // 激活失败就静默退出
             }
 
             return 0;

@@ -1,4 +1,5 @@
 using System.ComponentModel;
+using System.Diagnostics;
 using System.Net.NetworkInformation;
 using PortProxyManager.Models;
 using PortProxyManager.Services;
@@ -378,6 +379,9 @@ public sealed class MainForm : Form
         _trayAutostart = new ToolStripMenuItem("开机自启") { CheckOnClick = false };
         _trayAutostart.Click += (_, _) => ToggleAutostart();
 
+        var restart = new ToolStripMenuItem("重启");
+        restart.Click += (_, _) => RestartFromTray();
+
         var exit = new ToolStripMenuItem("退出");
         exit.Click += (_, _) => ExitApplication();
 
@@ -389,6 +393,7 @@ public sealed class MainForm : Form
         _trayMenu.Items.Add(new ToolStripSeparator());
         _trayMenu.Items.Add(_trayAutostart);
         _trayMenu.Items.Add(new ToolStripSeparator());
+        _trayMenu.Items.Add(restart);
         _trayMenu.Items.Add(exit);
         _trayMenu.Opening += (_, _) =>
         {
@@ -1811,6 +1816,39 @@ public sealed class MainForm : Form
     {
         _reallyExit = true;
         Close();
+    }
+
+    /// <summary>
+    /// 从托盘重启：先拉起新实例（带等待标记），再退出当前进程。
+    /// 新实例会等待旧实例释放互斥体后接管，窗口不会悄悄消失。
+    /// </summary>
+    private void RestartFromTray()
+    {
+        try
+        {
+            var exePath = AutorunService.ExecutablePath;
+            if (!File.Exists(exePath))
+            {
+                LogService.Current?.Warn($"重启失败：找不到可执行文件 {exePath}");
+                return;
+            }
+
+            var startInfo = new ProcessStartInfo
+            {
+                FileName = exePath,
+                UseShellExecute = false,
+                WorkingDirectory = Path.GetDirectoryName(exePath),
+            };
+            startInfo.Environment[Program.RestartEnvName] = "1";
+            _ = Process.Start(startInfo);
+        }
+        catch (Exception ex)
+        {
+            LogService.Current?.Warn($"重启失败：{ex.Message}");
+            return;
+        }
+
+        ExitApplication();
     }
 
     protected override void OnLoad(EventArgs e)
