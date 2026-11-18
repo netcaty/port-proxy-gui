@@ -197,9 +197,6 @@ onUnmounted(() => {
   <div v-if="env && !env.elevated" class="banner warn">
     ⚠️ 当前以普通权限运行：可以浏览映射，但新增 / 编辑 / 删除需要管理员权限。
   </div>
-  <div class="banner info">
-    💡 数据目录：{{ env?.dataDir ?? '…' }}（{{ env?.sourceLabel ?? '' }}）
-  </div>
 
   <div class="toolbar">
     <button class="primary" :disabled="!env?.elevated" @click="openAdd">＋ 新增映射</button>

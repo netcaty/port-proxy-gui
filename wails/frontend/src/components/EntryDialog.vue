@@ -49,32 +49,55 @@ const netshPreview = computed(() => {
     `connectaddress=${connect} connectport=${connectPort.value || '<端口>'}`
 })
 
+// 与后端 follow.IsFollowable 一致的跟随启用判断
+function looksLikeMac(id: string): boolean {
+  return /^[0-9a-fA-F]{12}$/.test(id.replace(/[-:]/g, ''))
+}
+
+function isFollowable(c: any): boolean {
+  const kind = c.kind ?? ''
+  if (kind === 'wsl') return !!c.id && !looksLikeMac(c.id)
+  return (kind === 'wsb' || kind === 'hyperv' || kind === 'vm')
+    && (!!c.mac || !!c.id)
+}
+
+function optionTip(c: any): string {
+  return isFollowable(c)
+    ? '选择后自动填充目标地址并启用跟随：客户机 IP 变化时自动重建映射'
+    : '网关 / 局域网设备：仅填充目标地址，不支持跟随'
+}
+
+// 下拉整体的悬停提示：说明当前跟随状态
+const candidateTip = computed(() => {
+  if (followKind.value) {
+    return `已启用跟随：${followLabel.value || followKind.value}（切换为"手动填写 IP"可清除跟随）`
+  }
+  return '选择客户机候选（wsl / wsb / hyperv / vm）可启用目标跟随；网关和局域网设备仅填充地址'
+})
+
 function onCandidateChange() {
   const c = candidates.value.find(x => x.address === selectedCandidate.value)
-  if (!c) return
+  if (!c) {
+    // 选了第一项"手动填写 IP"：等同清除跟随
+    followKind.value = ''
+    followId.value = ''
+    followMac.value = ''
+    followLabel.value = ''
+    return
+  }
   connectAddress.value = c.address
-  // 选中候选即建立跟随规则（Kind/Id/Mac 只用于本地匹配，不进命令行）
-  const kind = c.kind ?? ''
-  if (kind === 'wsl' || kind === 'wsb' || kind === 'hyperv' || kind === 'vm') {
-    followKind.value = kind
+  if (isFollowable(c)) {
+    // 选中可跟随候选即建立跟随规则（Kind/Id/Mac 只用于本地匹配，不进命令行）
+    followKind.value = c.kind
     followId.value = c.id ?? ''
     followMac.value = c.mac ?? ''
     followLabel.value = c.display ?? ''
   } else {
-    // 网关 / 局域网设备不跟随
     followKind.value = ''
     followId.value = ''
     followMac.value = ''
     followLabel.value = ''
   }
-}
-
-function clearFollow() {
-  followKind.value = ''
-  followId.value = ''
-  followMac.value = ''
-  followLabel.value = ''
-  selectedCandidate.value = ''
 }
 
 onMounted(async () => {
@@ -152,13 +175,13 @@ async function submit() {
             <label>分组</label>
             <input v-model="group" placeholder="可选，用于过滤" />
             <label>目标候选</label>
-            <div style="display:flex; gap:6px">
-              <select :value="selectedCandidate" @change="selectedCandidate = ($event.target as HTMLSelectElement).value; onCandidateChange()">
-                <option value="">— 手动填写 IP —</option>
-                <option v-for="c in candidates" :key="c.address" :value="c.address">{{ c.display }}</option>
-              </select>
-              <button style="padding:4px 8px; white-space:nowrap" @click="clearFollow">清除跟随</button>
-            </div>
+            <select :value="selectedCandidate" :title="candidateTip"
+                    @change="selectedCandidate = ($event.target as HTMLSelectElement).value; onCandidateChange()">
+              <option value="" title="手动填写目标地址，不启用跟随">— 手动填写 IP（不跟随）—</option>
+              <option v-for="c in candidates" :key="c.address" :value="c.address" :title="optionTip(c)">
+                {{ c.display }}
+              </option>
+            </select>
             <label>监听地址</label>
             <input v-model="listenAddress" class="mono" placeholder="留空或 * 表示所有地址" />
             <label>监听端口</label>
