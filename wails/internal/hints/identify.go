@@ -15,20 +15,24 @@ import (
 // IdentifyLocalGuests 识别本地客户机（沙盒/Hyper-V/VMware/VirtualBox）。
 // 超时以各子探测自身的 Math.Min(timeoutMs, Xxx) 为准。
 func IdentifyLocalGuests(baseHints []AddressHint, timeoutMs int) []AddressHint {
-	// 并发跑 Hyper-V 与 CLI 虚拟机探测（沙盒运行确认是同步的进程/窗口检查）
+	// 并发跑 Hyper-V / CLI 虚拟机探测 / 沙盒确认+CIM 命名
+	//（C# 版 sandboxNameTask 与 vmTask 是并发的，串行会白等 1-4s）
 	var vmHints []AddressHint
 	var cliHints []AddressHint
+	sandboxRunning := false
+	var sandboxName *string
 	var wg sync.WaitGroup
-	wg.Add(2)
+	wg.Add(3)
 	go func() { defer wg.Done(); vmHints = ProbeHyperV(baseHints, minInt(timeoutMs, HyperVMS)) }()
 	go func() { defer wg.Done(); cliHints = ProbeVMNames(baseHints, minInt(timeoutMs, VmCliMS)) }()
+	go func() {
+		defer wg.Done()
+		sandboxRunning = IsWindowsSandboxRunning()
+		if sandboxRunning {
+			sandboxName = getWindowsSandboxName()
+		}
+	}()
 	wg.Wait()
-
-	sandboxRunning := IsWindowsSandboxRunning()
-	sandboxName := (*string)(nil)
-	if sandboxRunning {
-		sandboxName = getWindowsSandboxName()
-	}
 
 	identified := append([]AddressHint{}, cliHints...)
 

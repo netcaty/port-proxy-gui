@@ -9,6 +9,8 @@ import (
 	"os/exec"
 	"regexp"
 	"strings"
+	"sync"
+	"time"
 
 	"portproxymanager/internal/logging"
 	"portproxymanager/internal/proc"
@@ -57,8 +59,34 @@ var (
 	arpHeadRe = regexp.MustCompile(`(\d{1,3}(?:\.\d{1,3}){3})[^0-9]*---`)
 )
 
-// EnumerateLocalNetwork 枚举本机网卡、网关、广播地址。
+// 网络枚举缓存：C# 版 EnumerateLocalNetwork 是纯内存 API（毫秒级），
+// Go 版含一次 PowerShell 网关查询（秒级），多处调用共享同一份结果。
+var (
+	netGate sync.Mutex
+	netAt   time.Time
+	netCap  LocalNetwork
+)
+
+// EnumerateLocalNetwork 枚举本机网卡、网关、广播地址（15 秒缓存）。
 func EnumerateLocalNetwork() LocalNetwork {
+	netGate.Lock()
+	if !netAt.IsZero() && time.Since(netAt) < 15*time.Second {
+		out := netCap
+		netGate.Unlock()
+		return out
+	}
+	netGate.Unlock()
+
+	network := enumerateLocalNetwork()
+
+	netGate.Lock()
+	netCap = network
+	netAt = time.Now()
+	netGate.Unlock()
+	return network
+}
+
+func enumerateLocalNetwork() LocalNetwork {
 	netw := LocalNetwork{Broadcasts: map[string]bool{}}
 
 	ifaces, err := net.Interfaces()
@@ -158,6 +186,11 @@ func cleanAdapterName(name, description string) string {
 
 // queryGateways 用 PowerShell 拿默认网关。失败返回空列表。
 func queryGateways() []Gateway {
+	// 优先纯 API（毫秒级，与 C# GatewayAddresses 同量级）；
+	// 失败再回退 PowerShell（保留兜底路径）
+	if out := queryGatewaysFast(); out != nil {
+		return out
+	}
 	ps := powershellExe()
 	if ps == "" {
 		return nil
