@@ -209,15 +209,6 @@ func setupSystemTray(app *application.App, win application.Window, svc *AppServi
 			}
 		}
 	})
-	var closeToTrayItem *application.MenuItem
-	closeToTrayItem = menu.AddCheckbox("关窗进托盘", settingsStore.Value.CloseToTray)
-	closeToTrayItem.OnClick(func(*application.Context) {
-		sv := settingsStore.Value
-		sv.CloseToTray = !sv.CloseToTray
-		settingsStore.Value = sv
-		_ = settingsStore.Save()
-		closeToTrayItem.SetChecked(sv.CloseToTray)
-	})
 	menu.AddSeparator()
 	menu.Add("退出").OnClick(func(*application.Context) {
 		saveWindowBounds(win, settingsStore)
