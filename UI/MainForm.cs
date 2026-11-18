@@ -45,8 +45,8 @@ public sealed class MainForm : Form
     private Point _lastLeftClickPoint;
 
     private RegistryWatcher? _watcher;
-    private readonly System.Windows.Forms.Timer _followTimer = new() { Interval = 5 * 60 * 1000 };
-    private readonly System.Windows.Forms.Timer _networkDebounceTimer = new() { Interval = 3_000 };
+    private readonly System.Windows.Forms.Timer _followTimer = new() { Interval = ProbeTimeouts.FollowSyncMs };
+    private readonly System.Windows.Forms.Timer _networkDebounceTimer = new() { Interval = ProbeTimeouts.NetworkDebounceMs };
     private int _followSyncRunning;
     private int _followPendingCount;
     private List<EntryRow> _rows = new();
@@ -96,7 +96,7 @@ public sealed class MainForm : Form
         // 启动时按保留策略清一次旧快照，避免历史备份无限增长
         BackupService.Prune(_paths, _settings.Value);
 
-        var uiTimer = new System.Windows.Forms.Timer { Interval = 1500 };
+        var uiTimer = new System.Windows.Forms.Timer { Interval = ProbeTimeouts.StatusTimerMs };
         uiTimer.Tick += (_, _) =>
         {
             uiTimer.Stop();
@@ -785,7 +785,7 @@ public sealed class MainForm : Form
     /// <summary>写操作后监听器需要一点时间才出现，稍后再复查一次避免误报。</summary>
     private void ScheduleHealthRecheck()
     {
-        var timer = new System.Windows.Forms.Timer { Interval = 1500 };
+        var timer = new System.Windows.Forms.Timer { Interval = ProbeTimeouts.StatusTimerMs };
         timer.Tick += (_, _) =>
         {
             timer.Stop();
@@ -812,7 +812,7 @@ public sealed class MainForm : Form
 
         // 启动后稍等再同步一次；候选地址已在启动时开始预热，这里复用结果，
         // forceRefresh:false 可避免同一次启动里重复探测 WSL / 虚拟机。
-        var startup = new System.Windows.Forms.Timer { Interval = 4000 };
+        var startup = new System.Windows.Forms.Timer { Interval = ProbeTimeouts.StartupSyncDelayMs };
         startup.Tick += (_, _) =>
         {
             startup.Stop();
@@ -1632,7 +1632,7 @@ public sealed class MainForm : Form
                 var ok = PerformDiagnosticAction(dialog.Action, entry);
 
                 // 服务重启 / 端口重建需要一点时间才能看到监听器
-                if (ok) await Task.Delay(1200);
+                if (ok) await Task.Delay(ProbeTimeouts.StatusRefreshDelayMs);
 
                 if (IsDisposed || Disposing) return;
 

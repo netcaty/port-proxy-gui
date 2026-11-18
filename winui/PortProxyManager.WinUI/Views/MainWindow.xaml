@@ -1,0 +1,253 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<Window
+    x:Class="PortProxyManager.WinUI.Views.MainWindow"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+    xmlns:controls="using:CommunityToolkit.WinUI.UI.Controls"
+    xmlns:local="using:PortProxyManager.WinUI.Views"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    Title="PortProxy 管理器"
+    mc:Ignorable="d">
+    <Window.SystemBackdrop>
+        <MicaBackdrop />
+    </Window.SystemBackdrop>
+
+    <Grid x:Name="RootLayout">
+        <Grid.Resources>
+            <!-- 行右键菜单：命令作用于当前选中行（RightTapped 时已选中） -->
+            <MenuFlyout x:Name="RowMenu">
+                <MenuFlyoutItem Command="{x:Bind ViewModel.EditSelectedCommand}" Text="编辑…" />
+                <MenuFlyoutItem Command="{x:Bind ViewModel.DeleteSelectedCommand}" Text="删除…" />
+                <MenuFlyoutSeparator />
+                <MenuFlyoutItem Command="{x:Bind ViewModel.CopySelectedNetshCommand}" Text="复制 netsh 命令" />
+                <MenuFlyoutItem Command="{x:Bind ViewModel.ProbeSelectedCommand}" Text="测试目标连通性" />
+            </MenuFlyout>
+        </Grid.Resources>
+
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <TitleBar x:Name="AppTitleBar" Title="PortProxy 管理器">
+            <TitleBar.IconSource>
+                <ImageIconSource ImageSource="Assets/AppIcon.ico" />
+            </TitleBar.IconSource>
+        </TitleBar>
+
+        <!-- 警告横幅：IP Helper 停止 / 映射未生效 / 数据目录降级 -->
+        <InfoBar
+            Grid.Row="1"
+            IsClosable="True"
+            IsOpen="{x:Bind ViewModel.BannerVisible, Mode=OneWay}"
+            IsTabStop="False"
+            Message="{x:Bind ViewModel.BannerMessage, Mode=OneWay}"
+            Severity="Warning">
+            <InfoBar.ActionButton>
+                <Button
+                    Command="{x:Bind ViewModel.RunBannerActionCommand}"
+                    Content="{x:Bind ViewModel.BannerActionText, Mode=OneWay}"
+                    Visibility="{x:Bind ViewModel.BannerActionVisibility, Mode=OneWay}" />
+            </InfoBar.ActionButton>
+        </InfoBar>
+
+        <!-- 工具栏：命令按钮 + 过滤 + 分组 -->
+        <Grid Grid.Row="2" Margin="12,6,12,0">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="*" />
+            </Grid.ColumnDefinitions>
+
+            <CommandBar
+                Grid.Column="0"
+                Background="Transparent"
+                DefaultLabelPosition="Right"
+                IsOpen="False">
+                <AppBarButton
+                    Command="{x:Bind ViewModel.AddEntryCommand}"
+                    KeyboardAcceleratorPlacementMode="Hidden"
+                    Label="新增">
+                    <AppBarButton.Icon>
+                        <FontIcon Glyph="&#xE710;" />
+                    </AppBarButton.Icon>
+                    <AppBarButton.KeyboardAccelerators>
+                        <KeyboardAccelerator Modifiers="Control" Key="N" />
+                    </AppBarButton.KeyboardAccelerators>
+                    <ToolTipService.ToolTip>
+                        <ToolTip Content="新增映射 (Ctrl+N)" />
+                    </ToolTipService.ToolTip>
+                </AppBarButton>
+                <AppBarButton
+                    Command="{x:Bind ViewModel.EditSelectedCommand}"
+                    IsEnabled="{x:Bind ViewModel.CanModifySelected, Mode=OneWay}"
+                    KeyboardAcceleratorPlacementMode="Hidden"
+                    Label="编辑">
+                    <AppBarButton.Icon>
+                        <FontIcon Glyph="&#xE70F;" />
+                    </AppBarButton.Icon>
+                    <AppBarButton.KeyboardAccelerators>
+                        <KeyboardAccelerator Modifiers="Control" Key="E" />
+                    </AppBarButton.KeyboardAccelerators>
+                    <ToolTipService.ToolTip>
+                        <ToolTip Content="编辑选中映射 (Ctrl+E)" />
+                    </ToolTipService.ToolTip>
+                </AppBarButton>
+                <AppBarButton
+                    Command="{x:Bind ViewModel.DeleteSelectedCommand}"
+                    IsEnabled="{x:Bind ViewModel.CanModifySelected, Mode=OneWay}"
+                    KeyboardAcceleratorPlacementMode="Hidden"
+                    Label="删除">
+                    <AppBarButton.Icon>
+                        <FontIcon Glyph="&#xE74D;" />
+                    </AppBarButton.Icon>
+                    <ToolTipService.ToolTip>
+                        <ToolTip Content="删除选中映射 (Del)" />
+                    </ToolTipService.ToolTip>
+                </AppBarButton>
+                <AppBarSeparator />
+                <AppBarButton
+                    Command="{x:Bind ViewModel.RefreshCommand}"
+                    KeyboardAcceleratorPlacementMode="Hidden"
+                    Label="刷新">
+                    <AppBarButton.Icon>
+                        <FontIcon Glyph="&#xE72C;" />
+                    </AppBarButton.Icon>
+                    <AppBarButton.KeyboardAccelerators>
+                        <KeyboardAccelerator Key="F5" />
+                    </AppBarButton.KeyboardAccelerators>
+                    <ToolTipService.ToolTip>
+                        <ToolTip Content="重新读取 (F5)" />
+                    </ToolTipService.ToolTip>
+                </AppBarButton>
+            </CommandBar>
+
+            <StackPanel
+                Grid.Column="1"
+                HorizontalAlignment="Right"
+                VerticalAlignment="Center"
+                Orientation="Horizontal"
+                Spacing="8">
+                <TextBox
+                    Width="220"
+                    PlaceholderText="按名称、分组、地址、端口过滤…"
+                    Text="{x:Bind ViewModel.FilterText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+                <ComboBox
+                    Width="160"
+                    ItemsSource="{x:Bind ViewModel.GroupOptions, Mode=OneWay}"
+                    SelectedItem="{x:Bind ViewModel.SelectedGroup, Mode=TwoWay}" />
+            </StackPanel>
+        </Grid>
+
+        <!-- 映射列表 -->
+        <controls:DataGrid
+            x:Name="Grid"
+            Grid.Row="3"
+            Margin="12,6,12,6"
+            AlternatingRowBackground="{ThemeResource SubtleFillColorSecondaryBrush}"
+            AutoGenerateColumns="False"
+            CanUserReorderColumns="False"
+            CanUserResizeColumns="True"
+            CanUserSortColumns="True"
+            HeadersVisibility="Column"
+            IsReadOnly="True"
+            ItemsSource="{x:Bind ViewModel.View, Mode=OneWay}"
+            RowDetailsVisibilityMode="Collapsed"
+            SelectedItem="{x:Bind ViewModel.SelectedRow, Mode=TwoWay}"
+            SelectionMode="Single"
+            Sorting="OnGridSorting">
+            <controls:DataGrid.Columns>
+                <controls:DataGridTextColumn
+                    Width="130"
+                    Binding="{Binding Name}"
+                    Header="名称"
+                    Tag="Name" />
+                <controls:DataGridTextColumn
+                    Width="80"
+                    Binding="{Binding Group}"
+                    Header="分组"
+                    Tag="Group" />
+                <controls:DataGridTextColumn
+                    Width="75"
+                    Binding="{Binding Type}"
+                    Header="类型"
+                    Tag="Type" />
+                <controls:DataGridTextColumn
+                    Width="108"
+                    Binding="{Binding ListenAddress}"
+                    Header="监听地址"
+                    Tag="ListenAddress" />
+                <controls:DataGridTextColumn
+                    Width="76"
+                    Binding="{Binding ListenPort}"
+                    Header="监听端口"
+                    Tag="ListenPort" />
+                <controls:DataGridTextColumn
+                    Width="108"
+                    Binding="{Binding ConnectAddress}"
+                    Header="目标地址"
+                    Tag="ConnectAddress" />
+                <controls:DataGridTextColumn
+                    Width="76"
+                    Binding="{Binding ConnectPort}"
+                    Header="目标端口"
+                    Tag="ConnectPort" />
+                <controls:DataGridTextColumn
+                    Width="96"
+                    Binding="{Binding Follow}"
+                    Header="跟随"
+                    Tag="Follow" />
+                <controls:DataGridTextColumn
+                    Width="68"
+                    Binding="{Binding Firewall}"
+                    Header="防火墙"
+                    Tag="Firewall" />
+                <controls:DataGridTextColumn
+                    Width="150"
+                    Binding="{Binding Note}"
+                    Header="备注"
+                    Tag="Note" />
+            </controls:DataGrid.Columns>
+        </controls:DataGrid>
+
+        <!-- 状态栏 -->
+        <Grid
+            Grid.Row="4"
+            Padding="12,4,12,6"
+            BorderBrush="{ThemeResource DividerStrokeColorDefaultBrush}"
+            BorderThickness="0,1,0,0">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="*" />
+            </Grid.ColumnDefinitions>
+
+            <TextBlock
+                Grid.Column="0"
+                Margin="0,0,16,0"
+                VerticalAlignment="Center"
+                Text="{x:Bind ViewModel.CountText, Mode=OneWay}" />
+
+            <TextBlock
+                Grid.Column="1"
+                Margin="0,0,16,0"
+                VerticalAlignment="Center"
+                Foreground="{x:Bind ViewModel.HelperBrush, Mode=OneWay}"
+                Text="{x:Bind ViewModel.HelperText, Mode=OneWay}">
+                <ToolTipService.ToolTip>
+                    <ToolTip Content="端口转发依赖 IP Helper（iphlpsvc）服务，它没运行的话映射配了也不会通。" />
+                </ToolTipService.ToolTip>
+            </TextBlock>
+
+            <HyperlinkButton
+                Grid.Column="2"
+                Padding="0"
+                Command="{x:Bind ViewModel.OpenDataDirCommand}"
+                Content="{x:Bind ViewModel.DirText, Mode=OneWay}"
+                HorizontalAlignment="Left" />
+        </Grid>
+    </Grid>
+</Window>

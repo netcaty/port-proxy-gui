@@ -23,7 +23,7 @@ public sealed class EntryDialog : Form
     private string? _pendingSelectionDisplay;
     private int _populateVersion;
     private int _selectionVersion;
-    private readonly System.Windows.Forms.Timer _guestRefreshTimer = new() { Interval = 30_000 };
+    private readonly System.Windows.Forms.Timer _guestRefreshTimer = new() { Interval = ProbeTimeouts.HintRefreshMs };
     private bool _populatingHints;
     private readonly NumericUpDown _connectPort = new();
     private readonly ComboBox _followBox = new();

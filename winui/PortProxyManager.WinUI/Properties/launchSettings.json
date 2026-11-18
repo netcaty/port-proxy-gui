@@ -1,0 +1,10 @@
+{
+  "profiles": {
+    "PortProxyManager.WinUI (Package)": {
+      "commandName": "MsixPackage"
+    },
+    "PortProxyManager.WinUI (Unpackaged)": {
+      "commandName": "Project"
+    }
+  }
+}

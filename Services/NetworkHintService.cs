@@ -50,8 +50,7 @@ public sealed record AddressHint(
 /// 并在查不到设备名 / 虚拟机名时作为 id 兜底。
 /// 有管理员权限时再问 Hyper-V（Get-VMNetworkAdapter）换出虚拟机名称，
 /// WSL 的客户机 IP 只能问 wsl.exe（宿主机看不到）。
-/// 新版 Windows 沙盒自带 wsb CLI，用 `wsb list` 确认沙盒正在运行；
-/// `wsb ip` 在部分版本会永久挂起，IP 统一走 ARP + Hyper-V 启发式兜底；
+/// 沙盒是否在运行由 WindowsSandbox 进程窗口确认；IP 统一走 ARP + Hyper-V 启发式。
 /// 同一沙盒残留多个 IP 时用 ICMP 可达性只保留最近一个。
 /// </summary>
 public static class NetworkHintService
@@ -228,7 +227,7 @@ public static class NetworkHintService
             var arp = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "arp.exe");
             if (!File.Exists(arp)) return;
 
-            var result = ProcRunner.Run(arp, new[] { "-a" }, timeoutMs: 4000);
+            var result = ProcRunner.Run(arp, new[] { "-a" }, timeoutMs: ProbeTimeouts.ArpMs);
             if (!result.Ok) return;
 
             var byInterface = network.Adapters
@@ -315,7 +314,7 @@ public static class NetworkHintService
     /// </summary>
     public static async Task<IReadOnlyList<AddressHint>> ResolveDeviceNamesAsync(
         IReadOnlyList<AddressHint> baseHints,
-        int perLookupTimeoutMs = 800)
+        int perLookupTimeoutMs = ProbeTimeouts.DnsLookupMs)
     {
         var targets = baseHints
             .Where(IsNameCandidate)
@@ -331,7 +330,7 @@ public static class NetworkHintService
         // 单个解析有取消超时，这里再兜一层总超时，避免某个系统解析卡住整体刷新
         await Task.WhenAny(
             Task.WhenAll(tasks),
-            Task.Delay(perLookupTimeoutMs + 700)).ConfigureAwait(false);
+            Task.Delay(perLookupTimeoutMs + ProbeTimeouts.DnsBatchSlackMs)).ConfigureAwait(false);
 
         return tasks
             .Where(t => t.IsCompletedSuccessfully)
@@ -427,25 +426,23 @@ public static class NetworkHintService
     /// </summary>
     public static async Task<IReadOnlyList<AddressHint>> IdentifyLocalGuestsAsync(
         IReadOnlyList<AddressHint>? baseHints = null,
-        int timeoutMs = 6000)
+        int timeoutMs = ProbeTimeouts.GuestProbeMs)
     {
         baseHints ??= GetHints();
 
-        var vmTask = ProbeHyperVAsync(baseHints, Math.Min(timeoutMs, 8000));
-        var vmCliTask = ProbeVmNamesAsync(baseHints, Math.Min(timeoutMs, 8000));
-
-        // wsb ip 在部分 Windows 版本上会永久挂起（实测 20s+），已停用。
-        // wsb list 只用来确认是否有运行中的沙盒，IP 始终走 ARP/Hyper-V 兜底。
-        var wsbTask = DetectRunningSandboxAsync(4000);
+        var vmTask = ProbeHyperVAsync(
+            baseHints, Math.Min(timeoutMs, ProbeTimeouts.HyperVMs));
+        var vmCliTask = ProbeVmNamesAsync(
+            baseHints, Math.Min(timeoutMs, ProbeTimeouts.VmCliMs));
 
         var sandboxRunning = IsWindowsSandboxRunning();
         var sandboxNameTask = sandboxRunning
-            ? GetWindowsSandboxNameAsync(Math.Min(timeoutMs, 4000))
+            ? GetWindowsSandboxNameAsync(Math.Min(timeoutMs, ProbeTimeouts.SandboxNameMs))
             : Task.FromResult<string?>(null);
 
         try
         {
-            await Task.WhenAll(vmTask, vmCliTask, wsbTask, sandboxNameTask).ConfigureAwait(false);
+            await Task.WhenAll(vmTask, vmCliTask, sandboxNameTask).ConfigureAwait(false);
         }
         catch (Exception ex)
         {
@@ -469,9 +466,8 @@ public static class NetworkHintService
             }
         }
 
-        // wsb list 的检测和进程启发式任一命中，就走 ARP/Hyper-V 兜底
-        var wsbDetected = wsbTask.IsCompletedSuccessfully && wsbTask.Result;
-        if (sandboxRunning || wsbDetected)
+        // 沙盒运行由进程窗口确认，IP 走 ARP + Hyper-V 启发式
+        if (sandboxRunning)
         {
             AddSandboxHints(baseHints, vmTask, sandboxName, identified);
         }
@@ -512,7 +508,7 @@ public static class NetworkHintService
             .ToList();
 
         var replies = await Task.WhenAll(duplicateIps.Select(async ip =>
-            (Ip: ip, Ok: await SandboxIpReachableAsync(ip, 600).ConfigureAwait(false))))
+            (Ip: ip, Ok: await SandboxIpReachableAsync(ip, ProbeTimeouts.SandboxPingMs).ConfigureAwait(false))))
             .ConfigureAwait(false);
 
         var reachable = replies
@@ -645,89 +641,6 @@ public static class NetworkHintService
     }
 
     /// <summary>
-    /// 新版 Windows 沙盒自带 wsb CLI。`wsb list` 只用来确认是否有运行中的沙盒；
-    /// `wsb ip` 在部分 Windows 版本上会永久挂起（实测 20s+），已停用，
-    /// 沙盒 IP 统一由 ARP + Hyper-V 启发式兜底。
-    /// </summary>
-    private static async Task<bool> DetectRunningSandboxAsync(int timeoutMs)
-    {
-        var wsb = FindWindowsSandboxCli();
-        if (wsb is null) return false;
-
-        try
-        {
-            var list = await Task.Run(() =>
-            {
-                var result = RunWsb(
-                    wsb, new[] { "list" }, Math.Min(timeoutMs, 4000), out var error);
-                if (result is null)
-                    LogService.Current?.Info($"wsb list 未执行：{error}");
-                return result;
-            }).ConfigureAwait(false);
-
-            if (list is null || !list.Ok) return false;
-
-            var ids = ParseSandboxIds(list.StdOut);
-            if (ids.Count == 0) return false;
-
-            var idsText = string.Join(",", ids);
-            if (!string.Equals(_lastWsbIds, idsText, StringComparison.OrdinalIgnoreCase))
-            {
-                _lastWsbIds = idsText;
-                LogService.Current?.Info(
-                    $"wsb CLI 发现 {ids.Count} 个运行中的沙盒；wsb ip 已停用，IP 走 ARP/Hyper-V 兜底。");
-            }
-
-            return true;
-        }
-        catch (Exception ex)
-        {
-            LogService.Current?.Info($"wsb list 跳过：{ex.Message}");
-            return false;
-        }
-    }
-
-    /// <summary>
-    /// 提权进程不能直接跑 wsb：它按令牌 Owner SID 算管道名，和普通用户
-    /// 启动的 WindowsSandboxServer 对不上。这里改用 explorer 的普通用户令牌。
-    /// </summary>
-    private static ProcResult? RunWsb(
-        string wsb,
-        IReadOnlyList<string> args,
-        int timeoutMs,
-        out string? error)
-    {
-        if (Elevation.IsElevated)
-            return ShellProcessRunner.TryRun(wsb, args, timeoutMs, out error);
-
-        try
-        {
-            error = null;
-            return ProcRunner.Run(wsb, args, timeoutMs, ProcTextEncoding.Utf8);
-        }
-        catch (Exception ex)
-        {
-            error = ex.Message;
-            return null;
-        }
-    }
-
-    private static readonly Regex SandboxIdToken = new(
-        @"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}",
-        RegexOptions.Compiled);
-
-    private static List<string> ParseSandboxIds(string text)
-    {
-        var result = new List<string>();
-        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-
-        foreach (Match match in SandboxIdToken.Matches(text))
-            if (seen.Add(match.Value)) result.Add(match.Value);
-
-        return result;
-    }
-
-    /// <summary>
     /// 从 WindowsSandbox 进程命令行里取 .wsb 文件名，例如"微信沙盒.wsb"。
     /// 新版沙盒把 .wsb 路径放在 WindowsSandboxRemoteSession.exe 的参数里。
     /// </summary>
@@ -822,7 +735,8 @@ public static class NetworkHintService
     /// <summary>
     /// WSL 客户机地址。只查询已在运行的发行版，不会为了探测而启动 WSL。
     /// </summary>
-    public static async Task<IReadOnlyList<AddressHint>> GetWslHintsAsync(int timeoutMs = 12000)
+    public static async Task<IReadOnlyList<AddressHint>> GetWslHintsAsync(
+        int timeoutMs = ProbeTimeouts.WslProbeMs)
     {
         var wsl = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "wsl.exe");
         if (!File.Exists(wsl)) return Array.Empty<AddressHint>();
@@ -834,7 +748,7 @@ public static class NetworkHintService
                 // 先查正在运行的发行版；-l --running 不会启动任何发行版。
                 // wsl -l 的列表是 UTF-16LE。
                 var listResult = ProcRunner.Run(
-                    wsl, new[] { "-l", "--running", "-q" }, Math.Min(timeoutMs, 3000),
+                    wsl, new[] { "-l", "--running", "-q" }, Math.Min(timeoutMs, ProbeTimeouts.WslListMs),
                     ProcTextEncoding.Utf16);
                 var distros = ParseWslDistros(listResult);
                 if (distros.Count == 0)
@@ -1165,7 +1079,7 @@ public static class NetworkHintService
                 if (exe is null) return names;
 
                 var list = ProcRunner.Run(
-                    exe, new[] { "list", "runningvms" }, Math.Min(timeoutMs, 3000));
+                    exe, new[] { "list", "runningvms" }, Math.Min(timeoutMs, ProbeTimeouts.VBoxListMs));
                 if (!list.Ok) return names;
 
                 foreach (var vm in ParseVBoxRunningVms(list.StdOut).Take(8))
@@ -1173,7 +1087,7 @@ public static class NetworkHintService
                     var info = ProcRunner.Run(
                         exe,
                         new[] { "showvminfo", vm.Uuid, "--machinereadable" },
-                        Math.Min(timeoutMs, 2500));
+                        Math.Min(timeoutMs, ProbeTimeouts.VBoxInfoMs));
                     if (!info.Ok) continue;
 
                     var (name, macs) = ParseVBoxMachineInfo(info.StdOut);
@@ -1207,7 +1121,7 @@ public static class NetworkHintService
                 if (exe is null) return names;
 
                 var list = ProcRunner.Run(
-                    exe, new[] { "list" }, Math.Min(timeoutMs, 3000));
+                    exe, new[] { "list" }, Math.Min(timeoutMs, ProbeTimeouts.VMwareListMs));
                 if (!list.Ok) return names;
 
                 foreach (var vmx in ParseVmrunList(list.StdOut).Take(8))
@@ -1225,84 +1139,6 @@ public static class NetworkHintService
             }
             return names;
         });
-    }
-
-    private static readonly object SandboxCliGate = new();
-    private static string? _sandboxCliPath;
-    private static DateTime _sandboxCliAtUtc = DateTime.MinValue;
-    private static readonly TimeSpan SandboxCliTtl = TimeSpan.FromMinutes(10);
-    private static string? _lastWsbIds;
-
-    /// <summary>
-    /// 找 Windows 沙盒 CLI。优先直接运行包内 wsb.exe：
-    /// App Execution Alias 在提权进程里可能卡住（实测 wsb list 2 秒都不返回），
-    /// 包内 exe 正常约 300 ms。包路径通过 Get-AppxPackage 查询并缓存 10 分钟。
-    /// </summary>
-    private static string? FindWindowsSandboxCli()
-    {
-        lock (SandboxCliGate)
-        {
-            if (_sandboxCliPath is not null
-                && File.Exists(_sandboxCliPath)
-                && DateTime.UtcNow - _sandboxCliAtUtc < SandboxCliTtl)
-                return _sandboxCliPath;
-        }
-
-        var path = ResolveSandboxPackageCli() ?? FindTool(
-            "wsb.exe",
-            Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                "Microsoft", "WindowsApps", "wsb.exe"));
-
-        lock (SandboxCliGate)
-        {
-            _sandboxCliPath = path;
-            _sandboxCliAtUtc = DateTime.UtcNow;
-        }
-
-        return path;
-    }
-
-    private static string? ResolveSandboxPackageCli()
-    {
-        try
-        {
-            var ps = PowerShellExe;
-            if (!File.Exists(ps)) return null;
-
-            const string script = """
-                [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false);
-                $ErrorActionPreference = 'SilentlyContinue';
-                (Get-AppxPackage -Name MicrosoftWindows.WindowsSandbox |
-                  Select-Object -First 1).InstallLocation
-                """;
-
-            var result = ProcRunner.Run(
-                ps,
-                new[]
-                {
-                    "-NoProfile", "-NonInteractive", "-NoLogo",
-                    "-ExecutionPolicy", "Bypass", "-Command", script,
-                },
-                3000,
-                ProcTextEncoding.Utf8);
-            if (!result.Ok) return null;
-
-            var location = result.StdOut
-                .Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries)
-                .Select(line => line.Trim().Trim('"'))
-                .LastOrDefault(line => line.Length > 0);
-
-            if (string.IsNullOrWhiteSpace(location)) return null;
-
-            var exe = Path.Combine(location, "wsb.exe");
-            return File.Exists(exe) ? exe : null;
-        }
-        catch (Exception ex)
-        {
-            LogService.Current?.Info($"查找沙盒包内 CLI 跳过：{ex.Message}");
-            return null;
-        }
     }
 
     private static string? FindTool(string fileName, params string[] candidates)

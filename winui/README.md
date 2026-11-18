@@ -1,0 +1,38 @@
+# PortProxy 管理器 — WinUI 3 版
+
+用 **WinUI 3（Windows App SDK）** 重写 [PortProxy 管理器](../README.md) 的界面，业务逻辑层（`Models/`、`Services/`）通过 **Compile 链接** 直接复用根目录源码，零复制、根目录零改动。
+
+## 阶段进度
+
+| 阶段 | 内容 | 状态 |
+|---|---|---|
+| 一 | 主窗口（表格/工具栏/过滤/排序/横幅/状态栏）、新增/编辑/删除、校验、设置持久化 | ✅ |
+| 二 | 诊断窗口、JSON 导入导出、目标跟随同步、地址候选探测 | ⬜ |
+| 三 | 系统托盘、开机自启、日志查看器 | ⬜ |
+
+## 构建
+
+依赖：.NET SDK（≥11）、[winapp CLI](https://github.com/microsoft/winappCli)（可选，用于运行调试与 UI 自动化验证）。
+
+```bat
+:: 开发调试运行（自动构建 + 启动）
+winapp run PortProxyManager.WinUI\PortProxyManager.WinUI.csproj
+
+:: 发布绿色目录形态（exe + 自包含运行时，无需安装 .NET / Windows App Runtime）
+dotnet publish PortProxyManager.WinUI\PortProxyManager.WinUI.csproj -c Release -r win-x64 --self-contained true -o dist
+```
+
+> **为什么不发单文件**：业务层用 `AppContext.BaseDirectory` 锚定"数据跟 exe"的便携目录，
+> 而 .NET 单文件的 BaseDirectory 指向 Temp 提取目录（随机 hash），会破坏该语义，
+> 故目录形态是本版的主发布形态。
+
+## 形态
+
+- **未打包**（`WindowsPackageType=None`）+ **自包含运行时**（`WindowsAppSDKSelfContained=true`），与旧版一致保持绿色便携
+- 全程不走 MSIX identity：本应用需要写 HKLM 并调用 netsh，打包运行的注册表虚拟化会导致调试行为失真
+- 单实例 Mutex / UAC 自提权 / `--dump` 只读输出等宿主行为与旧版保持一致
+
+## 与旧版的关系
+
+- 业务层（注册表读写、netsh 封装、校验、诊断、目标跟随、备份等）**链接自根目录**，两个版本共享同一份实现；根目录的修复会自动同步到本版
+- 本目录只包含：XAML 视图、MVVM 视图模型、WinUI 适配层（DispatcherQueue 线程切换、托盘宿主等）和精简后的 CLI 宿主
