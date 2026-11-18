@@ -6,9 +6,9 @@
 
 | 目录 | 工程 | 说明 |
 |---|---|---|
-| 根目录 | C# WinForms / .NET 9（`PortProxyManager.csproj`，v2.0.1） | 基线版本，业务源在 `Models/`、`Services/` |
-| `winui/` | WinUI 3 / Windows App SDK（`PortProxyManager.WinUI`，net11.0-windows，v2.0.0） | MVVM 重写，链接复用根目录业务层 |
-| `wails/` | Go + Wails v3 + Vue 3/TS（独立 go.mod） | Go 重写，v2.0.1；CLI 用 console 伴生 exe |
+| 根目录 | C# WinForms / .NET 9（`PortProxyManager.csproj`，v2.1.0） | 基线版本，业务源在 `Models/`、`Services/` |
+| `winui/` | WinUI 3 / Windows App SDK（`PortProxyManager.WinUI`，net11.0-windows，v2.1.0） | MVVM 重写，链接复用根目录业务层 |
+| `wails/` | Go + Wails v3 + Vue 3/TS（独立 go.mod） | Go 重写，v2.1.0；CLI 用 console 伴生 exe |
 
 **根 csproj 里的 `<Compile/None/EmbeddedResource Remove="winui\**" />` 和 `Remove="wails\**" />` 不能删**——否则 SDK 默认通配会把并行工程和它们的 obj 生成文件卷进本工程编译。
 
