@@ -136,7 +136,7 @@ func Classify(name, description string) AdapterInfo {
 
 func cleanAdapterName(name, description string) string {
 	text := strings.TrimSpace(name)
-	if strings.HasPrefix(strings.ToLower(text), "vEthernet") {
+	if strings.HasPrefix(strings.ToLower(text), "vethernet") {
 		open, close := strings.Index(text, "("), strings.LastIndex(text, ")")
 		if open >= 0 && close > open {
 			text = strings.TrimSpace(text[open+1 : close])

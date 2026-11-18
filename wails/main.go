@@ -35,9 +35,12 @@ func main() {
 		return
 	}
 
-	// --dump 纯只读：不建目录、不提权、不启动 GUI
+	// --dump / --hints 纯只读：不建目录、不提权、不启动 GUI
 	if opts.Dump {
 		os.Exit(cli.Dump(opts))
+	}
+	if opts.Hints {
+		os.Exit(cli.Hints(opts))
 	}
 
 	pathsCtx, err := paths.Resolve(opts.DataDir)

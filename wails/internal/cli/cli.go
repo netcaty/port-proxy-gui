@@ -20,6 +20,7 @@ import (
 type Options struct {
 	DataDir   string
 	Dump      bool
+	Hints     bool
 	JSON      bool
 	Out       string
 	Tray      bool
@@ -35,6 +36,8 @@ func Parse(args []string) Options {
 		switch {
 		case a == "--dump":
 			o.Dump = true
+		case a == "--hints":
+			o.Hints = true
 		case a == "--json":
 			o.JSON = true
 		case a == "--tray":
@@ -64,6 +67,7 @@ const HelpText = `PortProxy 管理器（Wails 版） — netsh portproxy 的图�
   --data-dir=<路径>   指定数据目录（meta.json / settings.json / logs / backups）。
   --tray              启动后直接最小化到托盘。
   --dump              以文本输出当前全部映射后退出（只读，不需要管理员）。
+  --hints             探测并输出全部目标地址候选后退出（只读，不需要管理员）。
   --json              与 --dump 一起使用，输出 JSON。
   --out=<文件>        与 --dump 一起使用，同时把结果写入文件。
   --no-elevate        不自动提权（GUI 只读，写入会提示需要管理员权限）。
