@@ -235,15 +235,25 @@ func (a *AppService) ListGroups() []string {
 // ListCandidates 目标地址候选列表（下拉用；只读快照，不启动探测）。
 // refresh=true 时强刷一次并等待（用于"刷新候选"按钮）。
 func (a *AppService) ListCandidates(refresh bool) []hints.AddressHint {
+	var list []hints.AddressHint
 	if refresh {
-		return hints.RefreshNow(true)
+		list = hints.RefreshNow(true)
+	} else {
+		list = hints.Snapshot()
+		if len(list) == 0 {
+			// 缓存还没预热好，强刷一次
+			list = hints.RefreshNow(false)
+		}
 	}
-	list := hints.Snapshot()
-	if len(list) == 0 {
-		// 缓存还没预热好，强刷一次
-		return hints.RefreshNow(false)
+	// 兜底：确保每条都有 display 文本（前端下拉依赖该字段）
+	out := make([]hints.AddressHint, len(list))
+	for i, h := range list {
+		if h.Display == "" {
+			h.Display = h.DisplayText()
+		}
+		out[i] = h
 	}
-	return list
+	return out
 }
 
 // SetFollowTarget 给一条映射设置/清除跟随目标（只改 meta，不碰 netsh）。

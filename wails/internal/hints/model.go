@@ -18,11 +18,15 @@ type AddressHint struct {
 	Kind      *string `json:"kind"`
 	ID        *string `json:"id"`
 	Confirmed bool    `json:"confirmed"`
+
+	// Display 下拉里显示的文本（序列化字段；发布缓存时由 DisplayText 填充）。
+	// Go 方法不会随 JSON 输出，前端只认这个字段。
+	Display string `json:"display"`
 }
 
-// Display 下拉里显示的文本，统一为 "ip - type:id"。
+// DisplayText 下拉里显示的文本，统一为 "ip - type:id"。
 // type 取 wsl / wsb / vm / hyperv；网关和普通局域网设备用 gw / lan。
-func (h AddressHint) Display() string {
+func (h AddressHint) DisplayText() string {
 	kind := "lan"
 	if notBlank(h.Kind) {
 		kind = *h.Kind

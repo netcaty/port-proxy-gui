@@ -13,4 +13,10 @@ export interface AddressHint {
     "kind": string | null;
     "id": string | null;
     "confirmed": boolean;
+
+    /**
+     * Display 下拉里显示的文本（序列化字段；发布缓存时由 DisplayText 填充）。
+     * Go 方法不会随 JSON 输出，前端只认这个字段。
+     */
+    "display": string;
 }

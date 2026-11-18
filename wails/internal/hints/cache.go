@@ -131,6 +131,8 @@ func publish(wsl, local, names, baseHints []AddressHint) {
 			continue
 		}
 		seen[strings.ToLower(h.Address)] = true
+		// 填充序列化字段（Go 方法不随 JSON 输出，前端下拉依赖它）
+		h.Display = h.DisplayText()
 		merged = append(merged, h)
 	}
 
@@ -147,7 +149,7 @@ func publish(wsl, local, names, baseHints []AddressHint) {
 	if log := logging.Current(); log != nil && len(merged) > 0 {
 		sample := make([]string, 0, minInt(12, len(merged)))
 		for i := 0; i < len(merged) && i < 12; i++ {
-			sample = append(sample, merged[i].Display())
+			sample = append(sample, merged[i].Display)
 		}
 		suffix := ""
 		if len(merged) > 12 {
@@ -160,7 +162,7 @@ func publish(wsl, local, names, baseHints []AddressHint) {
 func displaySorted(hints []AddressHint) string {
 	list := make([]string, 0, len(hints))
 	for _, h := range hints {
-		list = append(list, h.Display())
+		list = append(list, h.DisplayText())
 	}
 	sort.Strings(list)
 	return join(list, "|")
