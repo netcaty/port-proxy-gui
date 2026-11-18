@@ -70,21 +70,19 @@ func main() {
 		os.Exit(1)
 	}
 
-	// 单实例：已有实例在跑时激活它并退出
+	// 单实例：已有实例在跑时激活它并退出。
+	// 硬约束：互斥初始化真失败（句柄无效）时必须退出，绝不能多实例并行写数据。
 	guard, isFirst, err := singleinst.Acquire()
 	if err != nil {
-		// 拿不到锁不挡主流程（对应 C# 容错），但记日志
-		if log := logging.Current(); log != nil {
-			log.Warn("单实例互斥初始化失败：" + err.Error())
-		}
-		guard = nil
-	} else if !isFirst {
+		fmt.Fprintln(os.Stderr, "单实例互斥初始化失败：", err)
+		os.Exit(1)
+	}
+	if !isFirst {
+		// Acquire 内部已向旧实例发出激活信号
 		guard.Release()
 		return
 	}
-	if guard != nil {
-		defer guard.Release()
-	}
+	defer guard.Release()
 
 	// 提权策略（对应 C#）：非提权 + 未禁用提权 → UAC 自提权重启。
 	// UAC 取消或提权失败则继续以只读模式运行。
@@ -117,10 +115,10 @@ func main() {
 	s := settingsStore.Value
 	opts0 := application.WebviewWindowOptions{
 		Title:     AppName,
-		Width:     clamp(s.WindowWidth, 480, 100000),
-		Height:    clamp(s.WindowHeight, 320, 100000),
-		MinWidth:  480,
-		MinHeight: 320,
+		Width:     clamp(s.WindowWidth, 900, 100000),
+		Height:    clamp(s.WindowHeight, 560, 100000),
+		MinWidth:  900,
+		MinHeight: 560,
 		URL:       "/",
 	}
 	if s.Maximized {

@@ -150,10 +150,11 @@ const (
 )
 
 // waitTwo 等两个事件之一或超时（对应 C# WaitHandle.WaitAny）。
-// WAIT_OBJECT_0 = 0x80，WAIT_TIMEOUT = 0x102（x/sys/windows 未导出，自定义）。
+// WaitForMultipleObjects 成功返回 WAIT_OBJECT_0 + index（WAIT_OBJECT_0 = 0x00000000），
+// WAIT_TIMEOUT = 0x00000102。
 func waitTwo(a, b windows.Handle, timeout time.Duration) waitResult {
 	const (
-		waitObject0  = 0x00000080
+		waitObject0  = 0x00000000
 		waitTimeoutV = 0x00000102
 	)
 	event, _ := windows.WaitForMultipleObjects([]windows.Handle{a, b}, false, uint32(timeout.Milliseconds()))
