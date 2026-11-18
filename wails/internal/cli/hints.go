@@ -77,8 +77,7 @@ func Hints(o Options) int {
 	if o.JSON {
 		fmt.Println(output) // C# JSON 用 AppendLine，末尾有一个换行
 	} else {
-		fmt.Print(output) // 文本内容已自带 
-，与 C# SafeWrite 一致
+		fmt.Print(output) // 文本内容已自带 CRLF，与 C# SafeWrite 一致
 	}
 	if o.Out != "" {
 		if err := os.WriteFile(o.Out, []byte(output), 0o644); err != nil {
