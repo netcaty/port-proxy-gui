@@ -5,6 +5,7 @@
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
     xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
     xmlns:controls="using:CommunityToolkit.WinUI.UI.Controls"
+    xmlns:tb="using:H.NotifyIcon"
     xmlns:local="using:PortProxyManager.WinUI.Views"
     xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
     Title="PortProxy 管理器"
@@ -29,6 +30,26 @@
                     Visibility="{x:Bind ViewModel.SelectedFollowVisible, Mode=OneWay}" />
                 <MenuFlyoutItem Command="{x:Bind ViewModel.DiagnoseSelectedCommand}" Text="诊断转发链路…" />
             </MenuFlyout>
+
+            <!-- 系统托盘图标：常驻，右键菜单 -->
+            <tb:TaskbarIcon
+                x:Name="TrayIcon"
+                ToolTipText="PortProxy 管理器"
+                IconSource="Assets/AppIcon.ico"
+                MenuActivation="RightClick"
+                TrayLeftMouseUp="OnTrayLeftClick">
+                <tb:TaskbarIcon.ContextMenu>
+                    <tb:ContextMenu>
+                        <tb:MenuItem Header="打开主窗口" FontWeight="Bold" Click="OnTrayOpen" />
+                        <tb:MenuItem Header="刷新" Click="OnTrayRefresh" />
+                        <tb:MenuItem Header="同步跟随目标" Click="OnTraySyncFollow" />
+                        <tb:MenuItem Header="打开数据目录" Click="OnTrayOpenDataDir" />
+                        <tb:MenuItem x:Name="TrayAutostartItem" Header="开机自启" Click="OnTrayToggleAutostart" />
+                        <tb:MenuItem Header="重启" Click="OnTrayRestart" />
+                        <tb:MenuItem Header="退出" Click="OnTrayExit" />
+                    </tb:ContextMenu>
+                </tb:TaskbarIcon.ContextMenu>
+            </tb:TaskbarIcon>
         </Grid.Resources>
 
         <Grid.RowDefinitions>
@@ -127,6 +148,33 @@
                     </AppBarButton.KeyboardAccelerators>
                     <ToolTipService.ToolTip>
                         <ToolTip Content="重新读取 (F5)" />
+                    </ToolTipService.ToolTip>
+                </AppBarButton>
+                <AppBarSeparator />
+                <AppBarToggleButton
+                    IsChecked="{x:Bind ViewModel.AutostartChecked, Mode=TwoWay}"
+                    IsEnabled="{x:Bind ViewModel.AutostartEnabled, Mode=OneWay}"
+                    KeyboardAcceleratorPlacementMode="Hidden"
+                    Label="{x:Bind ViewModel.AutostartText, Mode=OneWay}">
+                    <AppBarToggleButton.Icon>
+                        <FontIcon Glyph="&#xE8D7;" />
+                    </AppBarToggleButton.Icon>
+                    <ToolTipService.ToolTip>
+                        <ToolTip Content="登录时自动启动（计划任务，不弹 UAC）" />
+                    </ToolTipService.ToolTip>
+                </AppBarToggleButton>
+                <AppBarButton
+                    Command="{x:Bind ViewModel.ShowLogCommand}"
+                    KeyboardAcceleratorPlacementMode="Hidden"
+                    Label="日志">
+                    <AppBarButton.Icon>
+                        <FontIcon Glyph="&#xE7C3;" />
+                    </AppBarButton.Icon>
+                    <AppBarButton.KeyboardAccelerators>
+                        <KeyboardAccelerator Modifiers="Control" Key="L" />
+                    </AppBarButton.KeyboardAccelerators>
+                    <ToolTipService.ToolTip>
+                        <ToolTip Content="查看操作日志 (Ctrl+L)" />
                     </ToolTipService.ToolTip>
                 </AppBarButton>
             </CommandBar>

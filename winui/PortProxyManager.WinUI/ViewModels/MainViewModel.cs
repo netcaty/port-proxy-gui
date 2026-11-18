@@ -529,6 +529,103 @@ public partial class MainViewModel : ObservableObject
         }
     }
 
+    // ---------------------------------------------------------------- 开机自启 / 日志 / 托盘
+
+    private bool? _autostartCache;
+    private DateTime _autostartCheckedAtUtc = DateTime.MinValue;
+
+    /// <summary>查询计划任务要起一个 schtasks 进程，缓存 30 秒避免刷新时反复调用。</summary>
+    public bool GetAutostartCached(bool force = false)
+    {
+        if (!force
+            && _autostartCache.HasValue
+            && (DateTime.UtcNow - _autostartCheckedAtUtc).TotalSeconds < 30)
+            return _autostartCache.Value;
+
+        var enabled = AutorunService.IsEnabled();
+        _autostartCache = enabled;
+        _autostartCheckedAtUtc = DateTime.UtcNow;
+        return enabled;
+    }
+
+    /// <summary>工具栏/托盘菜单的自启开关状态。</summary>
+    public bool AutostartChecked
+    {
+        get => AppRuntime.Elevated && GetAutostartCached();
+        set
+        {
+            if (value != GetAutostartCached(force: true)) ToggleAutostartCore();
+            OnPropertyChanged();
+            OnPropertyChanged(nameof(AutostartText));
+        }
+    }
+
+    public string AutostartText =>
+        (AppRuntime.Elevated && GetAutostartCached()) ? "自启 ✓" : "自启";
+
+    /// <summary>开机自启需要管理员权限，未提权时禁用开关。</summary>
+    public bool AutostartEnabled => AppRuntime.Elevated;
+
+    private void ToggleAutostartCore()
+    {
+        if (!AppRuntime.Elevated)
+        {
+            _ = Dialogs.InfoAsync("开机自启", "注册开机自启需要管理员权限。");
+            return;
+        }
+
+        var enabled = GetAutostartCached(force: true);
+        var (ok, message) = enabled
+            ? AutorunService.Disable()
+            : AutorunService.Enable(AppRuntime.Paths.DataDir);
+        if (!ok) LogService.Current?.Warn($"开机自启切换失败：{message}");
+
+        _autostartCache = null;   // 强制下次重新查询
+        OnPropertyChanged(nameof(AutostartChecked));
+        OnPropertyChanged(nameof(AutostartText));
+        RefreshData();
+    }
+
+    [RelayCommand]
+    private void ToggleAutostart() => ToggleAutostartCore();
+
+    [RelayCommand]
+    private void ShowLog()
+    {
+        var dir = LogService.Current?.Dir ?? AppRuntime.Paths.LogDir;
+        _ = LogViewerWindow.ShowAsync(dir);
+    }
+
+    /// <summary>托盘"重启"：先拉起新实例（带等待标记），再退出当前进程。</summary>
+    public void RestartFromTray()
+    {
+        try
+        {
+            var exePath = AutorunService.ExecutablePath;
+            if (!File.Exists(exePath))
+            {
+                LogService.Current?.Warn($"重启失败：找不到可执行文件 {exePath}");
+                return;
+            }
+
+            var startInfo = new System.Diagnostics.ProcessStartInfo
+            {
+                FileName = exePath,
+                UseShellExecute = false,
+                WorkingDirectory = Path.GetDirectoryName(exePath),
+            };
+            startInfo.Environment[Program.RestartEnvName] = "1";
+            _ = System.Diagnostics.Process.Start(startInfo);
+        }
+        catch (Exception ex)
+        {
+            LogService.Current?.Warn($"重启失败：{ex.Message}");
+            return;
+        }
+
+        AppRuntime.MainWindow?.ForceExit();
+    }
+
     // ---------------------------------------------------------------- 增删改
 
     /// <summary>工具栏/右键菜单命令：作用于当前选中行。</summary>
