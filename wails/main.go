@@ -132,11 +132,15 @@ func main() {
 	// 托盘（对应 C# NotifyIcon + 右键菜单）
 	setupSystemTray(app, win, appService, settingsStore, pathsCtx)
 
-	// 关窗进托盘（settings.CloseToTray），托盘菜单"退出"才真正退出
+	// 关窗进托盘（settings.CloseToTray），托盘菜单"退出"才真正退出。
+	// 必须用 RegisterHook + Cancel（对照官方 hide-window 示例）：
+	// hook 先于事件监听器执行，Cancel 阻止 Wails 内部的关闭监听器（它会
+	// unconditionallyClose + impl.close，OnWindowEvent 阶段窗口已经救不回来）。
 	closeToTray := func() bool { return settingsStore.Value.CloseToTray }
-	win.OnWindowEvent(events.Common.WindowClosing, func(ev *application.WindowEvent) {
+	win.RegisterHook(events.Common.WindowClosing, func(ev *application.WindowEvent) {
 		if closeToTray() {
 			win.Hide()
+			ev.Cancel()
 			return
 		}
 		saveWindowBounds(win, settingsStore)

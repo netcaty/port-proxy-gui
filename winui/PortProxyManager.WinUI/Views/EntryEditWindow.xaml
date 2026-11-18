@@ -60,7 +60,7 @@
                         Value="{x:Bind ViewModel.ListenPort, Mode=TwoWay}" />
                 </Grid>
 
-                <!-- 目标地址 / 端口（可编辑下拉：手输或选自动探测候选） -->
+                <!-- 目标候选：单一输入框，手输 IP 或选择探测到的地址/设备 -->
                 <Grid ColumnSpacing="12">
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="104" />
@@ -70,20 +70,20 @@
                     <TextBlock
                         Grid.Column="0"
                         VerticalAlignment="Center"
-                        Text="目标地址" />
+                        Text="目标候选" />
                     <ComboBox
                         x:Name="ConnectBox"
                         Grid.Column="1"
                         HorizontalAlignment="Stretch"
                         IsEditable="True"
-                        IsEnabled="{x:Bind ViewModel.ConnectEnabled, Mode=OneWay}"
-                        ItemsSource="{x:Bind ViewModel.AddressOptions, Mode=OneWay}"
-                        PlaceholderText="IP 或选择自动探测的虚拟机、局域网设备"
+                        ItemsSource="{x:Bind ViewModel.CandidateOptions, Mode=OneWay}"
+                        PlaceholderText="手输 IP，或选择网关 / 局域网设备 / WSL / 虚拟机 / 沙盒"
                         SelectionChanged="OnConnectSelectionChanged"
                         TextSubmitted="OnConnectTextSubmitted"
-                        Text="{x:Bind ViewModel.ConnectAddress, Mode=OneWay}">
+                        LostFocus="OnConnectLostFocus"
+                        Text="{x:Bind ViewModel.ConnectText, Mode=OneWay}">
                         <ComboBox.ItemTemplate>
-                            <DataTemplate x:DataType="vm:AddressOptionRow">
+                            <DataTemplate x:DataType="vm:CandidateRow">
                                 <TextBlock Text="{x:Bind Display}" />
                             </DataTemplate>
                         </ComboBox.ItemTemplate>
@@ -99,53 +99,31 @@
                         Value="{x:Bind ViewModel.ConnectPort, Mode=TwoWay}" />
                 </Grid>
 
-                <!-- 目标跟随（WSL / 虚拟机 IP 变化时自动更新目标地址） -->
+                <!-- 跟随开关 + 连通性测试并排；悬停给出说明 -->
                 <Grid ColumnSpacing="12">
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="104" />
                         <ColumnDefinition Width="*" />
-                        <ColumnDefinition Width="120" />
                     </Grid.ColumnDefinitions>
-                    <TextBlock
-                        Grid.Column="0"
-                        VerticalAlignment="Center"
-                        Text="目标跟随" />
-                    <ComboBox
+                    <StackPanel
                         Grid.Column="1"
-                        HorizontalAlignment="Stretch"
-                        ItemsSource="{x:Bind ViewModel.FollowOptions, Mode=OneWay}"
-                        PlaceholderText="跟随 WSL / 虚拟机地址"
-                        SelectedItem="{x:Bind ViewModel.SelectedFollow, Mode=TwoWay}">
-                        <ComboBox.ItemTemplate>
-                            <DataTemplate x:DataType="vm:FollowChoiceRow">
-                                <TextBlock Text="{x:Bind Display}" />
-                            </DataTemplate>
-                        </ComboBox.ItemTemplate>
-                    </ComboBox>
-                    <Button
-                        Grid.Column="2"
-                        Command="{x:Bind ViewModel.RefreshFollowCommand}"
-                        Content="刷新"
-                        ToolTipService.ToolTip="立即重新探测 WSL / 虚拟机地址" />
-                </Grid>
-
-                <!-- 连通性测试 -->
-                <Grid ColumnSpacing="12">
-                    <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="104" />
-                        <ColumnDefinition Width="Auto" />
-                        <ColumnDefinition Width="*" />
-                    </Grid.ColumnDefinitions>
-                    <Button
-                        Grid.Column="1"
-                        Command="{x:Bind ViewModel.TestConnectCommand}"
-                        Content="测试目标连通性" />
-                    <TextBlock
-                        Grid.Column="2"
                         VerticalAlignment="Center"
-                        IsTextSelectionEnabled="True"
-                        Text="{x:Bind ViewModel.TestResultText, Mode=OneWay}"
-                        TextWrapping="Wrap" />
+                        Orientation="Horizontal"
+                        Spacing="12">
+                        <CheckBox
+                            Content="跟随"
+                            IsChecked="{x:Bind ViewModel.FollowChecked, Mode=TwoWay}"
+                            IsEnabled="{x:Bind ViewModel.FollowEnabled, Mode=OneWay}"
+                            ToolTipService.ToolTip="对 WSL / 虚拟机 / Windows 沙盒开启 IP 自动跟随；网关 / 局域网设备不支持。" />
+                        <Button
+                            Command="{x:Bind ViewModel.TestConnectCommand}"
+                            Content="测试目标连通性"
+                            ToolTipService.ToolTip="按当前目标地址与端口测试 TCP 连通性。" />
+                        <TextBlock
+                            VerticalAlignment="Center"
+                            Text="{x:Bind ViewModel.TestResultText, Mode=OneWay}"
+                            TextWrapping="Wrap" />
+                    </StackPanel>
                 </Grid>
 
                 <!-- 名称 -->

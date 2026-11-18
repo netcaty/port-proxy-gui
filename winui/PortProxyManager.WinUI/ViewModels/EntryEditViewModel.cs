@@ -8,42 +8,37 @@ using PortProxyManager.WinUI.Views;
 
 namespace PortProxyManager.WinUI.ViewModels;
 
-/// <summary>目标地址候选（下拉项）：展示文本 + 选中后回填的纯 IP。</summary>
-public sealed class AddressOptionRow
+/// <summary>
+/// 目标候选下拉里的一项：探测到的地址（可跟随与否由 Hint 决定）、
+/// 编辑离线跟随条目时的兜底项，或"手动填写 IP"入口。
+/// 对齐 v2.0.0 EntryDialog 的 CandidateItem。
+/// </summary>
+public sealed class CandidateRow
 {
-    public AddressOptionRow(AddressHint hint)
+    public CandidateRow(AddressHint? hint, FollowTarget? fallbackTarget, string display)
     {
         Hint = hint;
-        Display = hint.Display;
-        Address = hint.Address;
+        FallbackTarget = fallbackTarget;
+        Display = display;
     }
 
-    public AddressHint Hint { get; }
-    public string Display { get; }
-    public string Address { get; }
-}
-
-/// <summary>目标跟随选择（"不跟随" + 各可跟随目标）。</summary>
-public sealed class FollowChoiceRow
-{
-    public FollowChoiceRow(FollowTarget? target, AddressHint? hint)
-    {
-        Target = target;
-        Hint = hint;
-        Display = target is null
-            ? "不跟随（固定 IP）"
-            : $"{target.Display} → {hint?.Address ?? "（当前未检测到）"}";
-    }
-
-    public FollowTarget? Target { get; }
     public AddressHint? Hint { get; }
+    public FollowTarget? FallbackTarget { get; }
     public string Display { get; }
+
+    public bool IsManualEntry => Hint is null && FallbackTarget is null;
+
+    public bool IsFollowable =>
+        (Hint is not null && TargetFollowService.IsFollowable(Hint))
+        || FallbackTarget is not null;
+
+    public override string ToString() => Display;
 }
 
 /// <summary>
-/// 新增/编辑映射表单。旧版 EntryDialog 的表单逻辑：
-/// family 推断、地址归一化校验、实时等价命令预览、完整 Validator 校验、
-/// 目标地址候选下拉（GuestHintCache）与目标跟随选择器。
+/// 新增/编辑映射表单。对齐 v2.0.0 EntryDialog：
+/// 单一"目标候选"可编辑下拉（手输 / 探测地址 / 离线跟随兜底）+
+/// "跟随"开关（仅可跟随设备可用），跟随与连通性测试并排。
 /// </summary>
 public partial class EntryEditViewModel : ObservableObject
 {
@@ -52,6 +47,11 @@ public partial class EntryEditViewModel : ObservableObject
     private readonly PortProxyEntry? _existing;
     private readonly EntryMeta? _existingMeta;
     private readonly IReadOnlyList<PortProxyEntry> _allEntries;
+
+    private FollowTarget? _initialFollowTarget;
+    private bool _followStoppedByUser;
+    private bool _populatingCandidates;
+    private int _populateVersion;
 
     /// <summary>确认后由窗口关闭自身。</summary>
     public event Action? CloseRequested;
@@ -67,14 +67,8 @@ public partial class EntryEditViewModel : ObservableObject
         AutoFamilyLabel, "v4tov4", "v4tov6", "v6tov4", "v6tov6",
     };
 
-    /// <summary>目标地址候选（打开下拉时由 GuestHintCache 快照填充）。</summary>
-    public ObservableCollection<AddressOptionRow> AddressOptions { get; } = new();
-
-    /// <summary>跟随选择项：首项固定"不跟随"。</summary>
-    public ObservableCollection<FollowChoiceRow> FollowOptions { get; } = new();
-
-    private FollowTarget? _initialFollowTarget;
-    private bool _populatingFollow;
+    /// <summary>目标候选下拉项（加载/下拉展开时由 PopulateCandidates 填充）。</summary>
+    public ObservableCollection<CandidateRow> CandidateOptions { get; } = new();
 
     public string Title => _existing is null ? "新增端口映射" : "编辑端口映射";
     public string ConfirmText => _existing is null ? "创建" : "保存";
@@ -89,161 +83,22 @@ public partial class EntryEditViewModel : ObservableObject
     public partial double ListenPort { get; set; } = 8080;
 
     [ObservableProperty]
-    public partial string ConnectAddress { get; set; } = "127.0.0.1";
-
-    [ObservableProperty]
     public partial double ConnectPort { get; set; } = 80;
 
-    /// <summary>当前选中的跟随项；null = 不跟随。</summary>
+    /// <summary>当前选中的候选；null = 手输状态。</summary>
     [ObservableProperty]
-    [NotifyPropertyChangedFor(nameof(ConnectEnabled))]
-    public partial FollowChoiceRow? SelectedFollow { get; set; }
+    public partial CandidateRow? SelectedCandidate { get; set; }
 
-    /// <summary>跟随状态下目标地址由探测结果决定，禁止手改（与旧版一致）。</summary>
-    public bool ConnectEnabled => SelectedFollow?.Target is null;
+    /// <summary>手输/候选展示文本（与输入框双向同步，取值时经清洗）。</summary>
+    [ObservableProperty]
+    public partial string ConnectText { get; set; } = "127.0.0.1";
 
-    /// <summary>选择跟随项：禁用手输并回填探测到的地址。</summary>
-    partial void OnSelectedFollowChanged(FollowChoiceRow? value)
-    {
-        if (_populatingFollow) return;
+    /// <summary>跟随开关：只对可跟随的候选（WSL / 虚拟机 / 沙盒）可点。</summary>
+    [ObservableProperty]
+    public partial bool FollowChecked { get; set; }
 
-        if (value?.Target is not null && !string.IsNullOrEmpty(value.Hint?.Address))
-            ConnectAddress = value.Hint!.Address;
-
-        UpdatePreview();
-    }
-
-    /// <summary>
-    /// 重建跟随选择项（读 GuestHintCache 快照，不阻塞）。
-    /// 已保存但当前探测不到的目标保留一项，避免编辑离线虚拟机时丢配置。
-    /// </summary>
-    public void PopulateFollowChoices()
-    {
-        if (_populatingFollow) return;
-        _populatingFollow = true;
-
-        try
-        {
-            var previous = SelectedFollow?.Target ?? _initialFollowTarget;
-
-            var choices = new List<FollowChoiceRow> { new(null, null) };
-
-            var hints = GuestHintCache.Snapshot
-                .Where(TargetFollowService.IsFollowable)
-                .GroupBy(h => h.Mac ?? h.Id ?? h.Address, StringComparer.OrdinalIgnoreCase)
-                .Select(g => g.First())
-                .OrderBy(h => h.Kind switch { "wsl" => 0, "hyperv" => 1, "wsb" => 2, _ => 3 })
-                .ToList();
-
-            var matched = false;
-            foreach (var hint in hints)
-            {
-                var target = FollowTarget.FromHint(hint);
-                if (target is null) continue;
-
-                var isCurrent = previous is not null && TargetFollowService.Matches(hint, previous);
-                matched |= isCurrent;
-
-                choices.Add(new FollowChoiceRow(target, hint));
-            }
-
-            if (previous is not null && !matched)
-                choices.Add(new FollowChoiceRow(previous, null));
-
-            FollowOptions.Clear();
-            foreach (var choice in choices) FollowOptions.Add(choice);
-
-            SelectedFollow = choices.FirstOrDefault(c =>
-                (c.Target is null && previous is null)
-                || (c.Target is not null && previous is not null
-                    && TargetFollowService.TargetEquals(c.Target, previous)))
-                ?? choices[0];
-        }
-        catch (Exception ex)
-        {
-            LogService.Current?.Warn($"填充跟随目标失败：{ex.Message}");
-        }
-        finally
-        {
-            _populatingFollow = false;
-        }
-
-        UpdatePreview();
-    }
-
-    [RelayCommand]
-    private async Task RefreshFollowAsync()
-    {
-        try
-        {
-            await GuestHintCache.RefreshNowAsync(force: true);
-            PopulateFollowChoices();
-        }
-        catch (Exception ex)
-        {
-            LogService.Current?.Warn($"刷新跟随目标失败：{ex.Message}");
-        }
-    }
-
-    /// <summary>填充目标地址候选（缓存快照去重；缓存为空时兜底一次网关/ARP）。</summary>
-    public void PopulateAddressHints()
-    {
-        try
-        {
-            var snapshot = GuestHintCache.Snapshot;
-            var source = snapshot.Count > 0
-                ? snapshot
-                : NetworkHintService.FilterUnconfirmedGuests(NetworkHintService.GetHints());
-
-            var sandboxMacs = new HashSet<string>(
-                source.Where(h => h.Category.Contains("沙盒", StringComparison.Ordinal) && h.Mac is not null)
-                    .Select(h => h.Mac!),
-                StringComparer.OrdinalIgnoreCase);
-
-            var merged = new List<AddressOptionRow>();
-            var seenAddresses = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            var seenSandboxMacs = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-
-            foreach (var hint in source)
-            {
-                // 沙盒同一 MAC 可能出现在多个虚拟交换机上，只保留一条
-                if (hint.Mac is not null
-                    && sandboxMacs.Contains(hint.Mac)
-                    && !seenSandboxMacs.Add(hint.Mac))
-                    continue;
-
-                if (seenAddresses.Add(hint.Address))
-                    merged.Add(new AddressOptionRow(hint));
-            }
-
-            AddressOptions.Clear();
-            foreach (var option in merged) AddressOptions.Add(option);
-        }
-        catch (Exception ex)
-        {
-            LogService.Current?.Warn($"填充地址候选失败：{ex.Message}");
-        }
-    }
-
-    /// <summary>用户从候选下拉选中一项：只把纯 IP 填进地址。</summary>
-    public void ApplySelectedHint(AddressOptionRow? option)
-    {
-        if (option is null || _populatingFollow) return;
-        if (SelectedFollow?.Target is not null) return; // 跟随状态下禁手改
-
-        ConnectAddress = option.Address;
-        UpdatePreview();
-    }
-
-    /// <summary>用户手输提交（Enter/失焦）：清洗并更新。</summary>
-    public void SubmitConnectText(string text)
-    {
-        if (SelectedFollow?.Target is not null) return;
-        if (string.Equals(ConnectAddress, text, StringComparison.Ordinal)) return;
-
-        ConnectAddress = text.Trim();
-        UpdatePreview();
-    }
+    /// <summary>跟随开关可用性：由当前选中候选决定。</summary>
+    public bool FollowEnabled => SelectedCandidate?.IsFollowable == true;
 
     [ObservableProperty]
     public partial string Name { get; set; } = string.Empty;
@@ -280,12 +135,212 @@ public partial class EntryEditViewModel : ObservableObject
         _allEntries = allEntries;
     }
 
-    // 输入变化 → 实时刷新等价命令预览
+    // 输入变化 → 实时刷新等价命令预览 / 跟随开关状态
     partial void OnSelectedFamilyChanged(string value) => UpdatePreview();
     partial void OnListenAddressChanged(string value) => UpdatePreview();
     partial void OnListenPortChanged(double value) => UpdatePreview();
-    partial void OnConnectAddressChanged(string value) => UpdatePreview();
     partial void OnConnectPortChanged(double value) => UpdatePreview();
+    partial void OnConnectTextChanged(string value) => UpdatePreview();
+
+    partial void OnSelectedCandidateChanged(CandidateRow? value)
+    {
+        if (_populatingCandidates) return;
+
+        UpdateFollowToggle();
+        UpdatePreview();
+    }
+
+    partial void OnFollowCheckedChanged(bool value) => UpdatePreview();
+
+    /// <summary>跟随开关只对可跟随的设备（WSL / 虚拟机 / 沙盒）可点击。</summary>
+    private void UpdateFollowToggle()
+    {
+        if (!FollowEnabled && FollowChecked)
+            FollowChecked = false;
+        OnPropertyChanged(nameof(FollowEnabled));
+    }
+
+    /// <summary>
+    /// 重建目标候选下拉：第一项为"手动填写 IP"入口，其后是网关 / 局域网设备 /
+    /// 已确认运行中的 WSL / 虚拟机 / 沙盒。编辑离线跟随条目时补一个兜底项。
+    /// </summary>
+    public void PopulateCandidates()
+    {
+        if (_populatingCandidates) return;
+
+        _populatingCandidates = true;
+        try
+        {
+            _populateVersion++;
+
+            // 启动时已预热；这里只读缓存，避免展开下拉时被 arp.exe / wsl.exe 阻塞。
+            var snapshot = GuestHintCache.Snapshot;
+            var source = snapshot.Count > 0
+                ? snapshot
+                : NetworkHintService.FilterUnconfirmedGuests(NetworkHintService.GetHints());
+
+            var sandboxMacs = new HashSet<string>(
+                source
+                    .Where(h => h.Category.Contains("沙盒", StringComparison.Ordinal) && h.Mac is not null)
+                    .Select(h => h.Mac!),
+                StringComparer.OrdinalIgnoreCase);
+
+            var merged = new List<AddressHint>();
+            var seenAddresses = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var seenSandboxMacs = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+            foreach (var hint in source)
+            {
+                // 沙盒同一 MAC 可能出现在多个虚拟交换机上；只保留优先级最高的一条
+                if (hint.Mac is not null
+                    && sandboxMacs.Contains(hint.Mac)
+                    && !seenSandboxMacs.Add(hint.Mac))
+                    continue;
+
+                if (seenAddresses.Add(hint.Address)) merged.Add(hint);
+            }
+
+            var items = new List<CandidateRow> { new(null, null, "— 手动填写 IP —") };
+
+            foreach (var hint in merged)
+            {
+                var followable = TargetFollowService.IsFollowable(hint);
+                items.Add(new CandidateRow(
+                    hint,
+                    followable ? FollowTarget.FromHint(hint) : null,
+                    hint.Display));
+            }
+
+            // 正在跟随的条目：优先选中对应候选；目标未检测到时补一个兜底项
+            var previousTarget = _followStoppedByUser ? null : _initialFollowTarget;
+            if (previousTarget is not null)
+            {
+                var matched = items.FirstOrDefault(i =>
+                    i.Hint is not null && TargetFollowService.Matches(i.Hint, previousTarget));
+
+                if (matched is null)
+                {
+                    items.Add(new CandidateRow(
+                        null, previousTarget,
+                        $"{previousTarget.Display}（当前未检测到，保留原地址）"));
+                }
+            }
+
+            CandidateOptions.Clear();
+            foreach (var item in items) CandidateOptions.Add(item);
+
+            if (previousTarget is not null)
+            {
+                SelectedCandidate =
+                    items.FirstOrDefault(i =>
+                        i.Hint is not null && TargetFollowService.Matches(i.Hint, previousTarget))
+                    ?? items.FirstOrDefault(i => i.FallbackTarget is not null
+                        && TargetFollowService.TargetEquals(i.FallbackTarget, previousTarget))
+                    ?? items[0];
+                FollowChecked = true;
+                ConnectText = GetCurrentConnectAddress();
+            }
+            else
+            {
+                SelectedCandidate = null;
+                FollowChecked = false;
+
+                var current = TryExtractAddress(ConnectText) ?? ConnectText.Trim();
+                if (current.Length > 0)
+                    ConnectText = current;
+            }
+        }
+        catch (Exception ex)
+        {
+            LogService.Current?.Warn($"填充目标候选失败：{ex.Message}");
+        }
+        finally
+        {
+            _populatingCandidates = false;
+        }
+
+        UpdateFollowToggle();
+        UpdatePreview();
+    }
+
+    /// <summary>
+    /// 当前生效的目标地址：选中候选取其探测地址（离线跟随保留原地址），
+    /// 手输状态取输入框文本。
+    /// </summary>
+    public string GetCurrentConnectAddress()
+    {
+        if (SelectedCandidate is { } item)
+        {
+            if (item.Hint?.Address is { Length: > 0 } hintAddress) return hintAddress;
+            return _existing?.NormalizedConnect ?? string.Empty;
+        }
+
+        return TryExtractAddress(ConnectText) ?? ConnectText.Trim();
+    }
+
+    /// <summary>用户手输提交（Enter / 失焦）：手动填写项之外的文本保留原样。</summary>
+    public void SubmitConnectText(string text)
+    {
+        if (_populatingCandidates) return;
+
+        // 手输状态：用户放弃跟随
+        _followStoppedByUser = true;
+        SelectedCandidate = null;
+        ConnectText = TryExtractAddress(text) ?? text.Trim();
+
+        UpdateFollowToggle();
+        UpdatePreview();
+    }
+
+    /// <summary>选中下拉候选：手动填写项清空文本，其余保留展示文本。</summary>
+    public void CandidateCommitted(CandidateRow? item)
+    {
+        if (_populatingCandidates) return;
+
+        if (item is not null)
+        {
+            if (item.IsManualEntry)
+                ConnectText = string.Empty;
+            _followStoppedByUser = false;
+        }
+
+        UpdateFollowToggle();
+        UpdatePreview();
+    }
+
+    /// <summary>
+    /// 窗口显示后等待一次候选刷新（如果启动预热还在跑就复用它），
+    /// 完成后补填下拉。
+    /// </summary>
+    public async Task RefreshCandidatesWhenReadyAsync()
+    {
+        try
+        {
+            await GuestHintCache.RefreshNowAsync(force: false);
+            PopulateCandidates();
+        }
+        catch (Exception ex)
+        {
+            LogService.Current?.Warn($"补充目标候选失败：{ex.Message}");
+        }
+    }
+
+    /// <summary>从展示文本里取回纯 IP（支持新格式 "IP - type:id" 与旧格式 "IP · 说明"）。</summary>
+    private static string? TryExtractAddress(string text)
+    {
+        var candidate = text.Trim();
+
+        var legacySeparator = candidate.IndexOf("  ·  ", StringComparison.Ordinal);
+        if (legacySeparator > 0) candidate = candidate[..legacySeparator].Trim();
+
+        var separator = candidate.IndexOf(" - ", StringComparison.Ordinal);
+        if (separator > 0) candidate = candidate[..separator].Trim();
+
+        return System.Net.IPAddress.TryParse(candidate, out var ip)
+               && ip.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork
+            ? candidate
+            : null;
+    }
 
     /// <summary>编辑模式时载入现有值。</summary>
     public void LoadValues()
@@ -295,7 +350,7 @@ public partial class EntryEditViewModel : ObservableObject
         SelectedFamily = _existing.Family;
         ListenAddress = _existing.NormalizedListen;
         ListenPort = Math.Clamp(_existing.ListenPort, 1, 65535);
-        ConnectAddress = _existing.NormalizedConnect;
+        ConnectText = _existing.NormalizedConnect;
         ConnectPort = Math.Clamp(_existing.ConnectPort, 1, 65535);
 
         if (_existingMeta is null) return;
@@ -309,7 +364,7 @@ public partial class EntryEditViewModel : ObservableObject
 
     private string ResolveFamily() =>
         SelectedFamily == AutoFamilyLabel
-            ? Validator.InferFamily(ListenAddress, ConnectAddress)
+            ? Validator.InferFamily(ListenAddress, GetCurrentConnectAddress())
             : SelectedFamily;
 
     private PortProxyEntry? BuildEntry(string family, out string error)
@@ -323,8 +378,10 @@ public partial class EntryEditViewModel : ObservableObject
             return null;
         }
 
+        var connectText = GetCurrentConnectAddress();
+
         if (!Validator.TryNormalizeAddress(
-                ConnectAddress, family.EndsWith("v6"), out var connect, out var connectError))
+                connectText, family.EndsWith("v6"), out var connect, out var connectError))
         {
             error = connectError;
             return null;
@@ -361,6 +418,12 @@ public partial class EntryEditViewModel : ObservableObject
     private async Task ConfirmAsync()
     {
         ErrorText = string.Empty;
+
+        if (FollowChecked && GetCurrentConnectAddress().Length == 0)
+        {
+            ErrorText = "跟随目标当前未检测到，且没有已保存的目标地址。";
+            return;
+        }
 
         var family = ResolveFamily();
         var entry = BuildEntry(family, out var buildError);
@@ -404,6 +467,14 @@ public partial class EntryEditViewModel : ObservableObject
             return;
         }
 
+        // 跟随：开关打开且选中候选 → 取候选对应的 FollowTarget
+        var selectedItem = SelectedCandidate;
+        var follow = FollowChecked && selectedItem is not null
+            ? selectedItem.Hint is not null
+                ? FollowTarget.FromHint(selectedItem.Hint)
+                : selectedItem.FallbackTarget
+            : null;
+
         Result = entry;
         ResultMeta = new EntryMeta
         {
@@ -412,14 +483,11 @@ public partial class EntryEditViewModel : ObservableObject
             Note = Trimmed(Note),
             HasFirewallRule = CreateFirewallRule,
             CreatedAt = _existingMeta?.CreatedAt ?? DateTimeOffset.Now,
+            FollowKind = follow?.Kind,
+            FollowId = follow?.Id,
+            FollowMac = follow?.Mac,
+            FollowLabel = follow?.Label,
         };
-
-        // 目标跟随：跟随项来自下拉选择；不跟随则清空跟随标识
-        var follow = SelectedFollow?.Target;
-        ResultMeta.FollowKind = follow?.Kind;
-        ResultMeta.FollowId = follow?.Id;
-        ResultMeta.FollowMac = follow?.Mac;
-        ResultMeta.FollowLabel = follow?.Label;
 
         Confirmed = true;
 
@@ -431,7 +499,7 @@ public partial class EntryEditViewModel : ObservableObject
     {
         TestResultText = "正在测试…";
         var (ok, detail) = await PortProbe.TestConnectAsync(
-            ConnectAddress.Trim(), (int)Math.Clamp(ConnectPort, 1, 65535));
+            GetCurrentConnectAddress(), (int)Math.Clamp(ConnectPort, 1, 65535));
         TestResultText = detail;
     }
 

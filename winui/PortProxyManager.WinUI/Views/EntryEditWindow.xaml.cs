@@ -33,7 +33,7 @@ public sealed partial class EntryEditWindow : Window
 
         // Window 没有 Loaded 事件，挂在根布局上；
         // Resize 用物理像素，逻辑尺寸按主窗口测得的渲染缩放换算
-        Root.Loaded += async (_, _) =>
+        Root.Loaded += (_, _) =>
         {
             AppWindow.Resize(new Windows.Graphics.SizeInt32(
                 (int)Math.Round(600 * AppRuntime.UiScale),
@@ -42,31 +42,28 @@ public sealed partial class EntryEditWindow : Window
             ViewModel.LoadValues();
             ViewModel.RefreshPreview();
 
-            // 打开下拉即有内容：候选与跟随项先读缓存，后台刷新
-            ViewModel.PopulateAddressHints();
-            ViewModel.PopulateFollowChoices();
-            try
-            {
-                await GuestHintCache.RefreshNowAsync(force: false);
-                ViewModel.PopulateFollowChoices();
-            }
-            catch
-            {
-                // 预热失败不影响表单
-            }
+            // 打开下拉即有内容：候选先读缓存，后台刷新
+            ViewModel.PopulateCandidates();
+            _ = ViewModel.RefreshCandidatesWhenReadyAsync();
         };
     }
 
-    /// <summary>候选下拉选中：只把纯 IP 填进地址。</summary>
+    /// <summary>候选下拉选中：手动填写项清空文本，其余保留展示文本。</summary>
     private void OnConnectSelectionChanged(object sender, SelectionChangedEventArgs e)
     {
-        ViewModel.ApplySelectedHint(ConnectBox.SelectedItem as AddressOptionRow);
+        ViewModel.CandidateCommitted(ConnectBox.SelectedItem as CandidateRow);
     }
 
     /// <summary>手输提交（Enter）：清洗后更新。</summary>
     private void OnConnectTextSubmitted(ComboBox sender, ComboBoxTextSubmittedEventArgs args)
     {
         ViewModel.SubmitConnectText(args.Text);
+    }
+
+    /// <summary>失焦也提交：用户手输后直接点"创建"的路径不能丢文本。</summary>
+    private void OnConnectLostFocus(object sender, RoutedEventArgs e)
+    {
+        ViewModel.SubmitConnectText(ConnectBox.Text);
     }
 
     /// <summary>
