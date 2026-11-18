@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"time"
 
 	"github.com/wailsapp/wails/v3/pkg/application"
 	"github.com/wailsapp/wails/v3/pkg/events"
@@ -29,6 +31,10 @@ var assets embed.FS
 
 //go:embed build/windows/icon.ico
 var trayIconData []byte
+
+// restartEnvName 托盘"重启"标记：新实例带此环境变量时等待旧实例
+// 释放互斥体后接管（避免激活正在退出的旧窗口导致程序悄悄消失）。
+const restartEnvName = "PORTPROXYMANAGER_WAILS_RESTART"
 
 func main() {
 	opts := cli.Parse(os.Args[1:])
@@ -75,7 +81,15 @@ func main() {
 
 	// 单实例：已有实例在跑时激活它并退出。
 	// 硬约束：互斥初始化真失败（句柄无效）时必须退出，绝不能多实例并行写数据。
-	guard, isFirst, err := singleinst.Acquire()
+	// 托盘"重启"场景：新实例带 PORTPROXYMANAGER_WAILS_RESTART=1 环境变量，
+	// 稍等旧实例退出释放锁后再接管（对应 C# mutex.WaitOne(restartWait ? 5000 : 0)）。
+	restartWait := os.Getenv(restartEnvName) == "1"
+	os.Unsetenv(restartEnvName)
+	var acquireWait time.Duration
+	if restartWait {
+		acquireWait = 5 * time.Second
+	}
+	guard, isFirst, err := singleinst.Acquire(acquireWait)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "单实例互斥初始化失败：", err)
 		os.Exit(1)
@@ -210,6 +224,26 @@ func setupSystemTray(app *application.App, win application.Window, svc *AppServi
 		}
 	})
 	menu.AddSeparator()
+	menu.Add("重启").OnClick(func(*application.Context) {
+		// 参照 C# RestartFromTray：先拉起新实例（带重启标记，新实例会等待
+		// 旧实例释放互斥体后接管），再退出当前进程，窗口不会悄悄消失。
+		exe, err := os.Executable()
+		if err != nil {
+			return
+		}
+		cmd := exec.Command(exe)
+		cmd.Env = append(os.Environ(), restartEnvName+"=1")
+		cmd.Dir = filepath.Dir(exe)
+		if err := cmd.Start(); err != nil {
+			if log := logging.Current(); log != nil {
+				log.Warn("重启失败：" + err.Error())
+			}
+			return
+		}
+		saveWindowBounds(win, settingsStore)
+		svc.Stop()
+		app.Quit()
+	})
 	menu.Add("退出").OnClick(func(*application.Context) {
 		saveWindowBounds(win, settingsStore)
 		svc.Stop()

@@ -26,9 +26,11 @@ type Instance struct {
 }
 
 // Acquire 尝试获取单实例锁。
+// waitTimeout=0 表示立即返回（普通启动）；非 0 用于托盘"重启"场景——
+// 新实例等待旧实例退出释放锁后再接管（对应 C# mutex.WaitOne(restartWait ? 5000 : 0)）。
 // 返回值：(guard, isFirst, error)。isFirst=false 表示已有实例在运行，
 // 调用方应 SignalActivate() 激活旧窗口后退出。
-func Acquire() (*Instance, bool, error) {
+func Acquire(waitTimeout time.Duration) (*Instance, bool, error) {
 	// 注意 x/sys 语义：mutex 已存在时返回【有效句柄 + err=ERROR_ALREADY_EXISTS】，
 	// 这是正常路径（锁被旧实例持有），绝不是失败——失败仅指句柄无效。
 	mutex, err := windows.CreateMutex(nil, false, windows.StringToUTF16Ptr(mutexName))
@@ -36,7 +38,7 @@ func Acquire() (*Instance, bool, error) {
 		return nil, false, err
 	}
 
-	wait, _ := windows.WaitForSingleObject(mutex, 0)
+	wait, _ := windows.WaitForSingleObject(mutex, uint32(waitTimeout.Milliseconds()))
 	// Win32 返回值：WAIT_OBJECT_0=0（拿到锁）、WAIT_ABANDONED=0x80（接管被遗弃的锁）、
 	// WAIT_TIMEOUT=0x102（已被其他实例持有）。
 	owned := wait == windows.WAIT_OBJECT_0 || wait == windows.WAIT_ABANDONED
