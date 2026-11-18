@@ -22,6 +22,11 @@ tasks:
     cmds:
       - task: "{{.GOOS}}:build"
 
+  build:cli:
+    summary: 构建命令行伴生程序（console 子系统，cmd 会正常等待）
+    cmds:
+      - go build -trimpath -ldflags="-s -w" -o bin/portproxymanager-cli.exe ./cmd/portproxy-cli
+
   package:
     summary: Packages a production build of the application
     cmds:

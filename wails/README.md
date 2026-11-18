@@ -7,9 +7,12 @@
 依赖：Go 1.24+、Node 18+、wails3 CLI（`go install github.com/wailsapp/wails/v3/cmd/wails3@latest`）。
 
 ```
-wails3 dev     # 开发模式（前端热重载）
-wails3 build   # 生产构建，产物 bin/portproxymanager.exe（单文件，约 11 MB）
+wails3 dev       # 开发模式（前端热重载）
+wails3 build     # 生产构建，产物 bin/portproxymanager.exe（单文件，约 11 MB）
+wails3 build:cli # 命令行伴生程序 bin/portproxymanager-cli.exe（console 子系统）
 ```
+
+命令行场景（--dump / --hints）请用 `portproxymanager-cli.exe`：主程序是 GUI 子系统，交互式 cmd 不等待它，提示符会先返回。
 
 ## 功能对照（与 C# 版）
 
@@ -30,6 +33,7 @@ wails3 build   # 生产构建，产物 bin/portproxymanager.exe（单文件，�
 | UAC 自提权（UAC 取消退回只读） | ✅ | ShellExecuteExW "runas"，错误码 1223 区分 |
 | 开机自启（计划任务，登录不弹 UAC） | ✅ | schtasks /xml，UTF-16 BOM，RunLevel=HighestAvailable |
 | CLI 只读模式 | ✅ | `--dump [--json] [--out=] [--data-dir=]`，JSON 字段与 C# 版一致 |
+| CLI 伴生程序 | ✅ | `portproxymanager-cli.exe`（console 子系统）：交互式 cmd 会正常等待主 GUI exe（windowsgui 不等待），CLI 场景请用伴生 exe |
 | --selftest 自检 | ⬜ 未移植 | |
 
 ### 与 C# 版的有意差异（按需求裁剪）
