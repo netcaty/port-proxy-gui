@@ -248,3 +248,7 @@ table.grid td.mono { font-family: Consolas, "Cascadia Mono", monospace; font-siz
   user-select: text;
 }
 .empty-tip { padding: 40px; text-align: center; color: var(--text-dim); }
+
+/* 状态栏可点击项 */
+.statusbar .item.clickable { cursor: pointer; border-radius: 3px; padding: 1px 6px; }
+.statusbar .item.clickable:hover { background: var(--row-hover); color: var(--text); }

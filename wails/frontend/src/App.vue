@@ -140,6 +140,32 @@ async function createSnapshot() {
   window.alert(res.ok ? '✅ 快照已创建（数据目录 backups 下）' : '❌ ' + (res.error ?? '创建失败'))
 }
 
+// ---- 状态栏 ----
+const autorun = ref(false)
+
+const shortDataDir = computed(() => {
+  const dir = env.value?.dataDir ?? ''
+  return dir.length > 46 ? dir.slice(0, 20) + '…' + dir.slice(-24) : dir
+})
+
+async function loadAutorun() {
+  try {
+    autorun.value = await AppService.IsAutorunEnabled()
+  } catch { autorun.value = false }
+}
+
+function openDataDir() {
+  void AppService.OpenDataDir()
+}
+
+async function toggleAutorun() {
+  const res = autorun.value ? await AppService.DisableAutorun() : await AppService.EnableAutorun()
+  if (!res.ok && res.message) {
+    window.alert(res.message)
+  }
+  await loadAutorun()
+}
+
 async function syncFollow() {
   const report = await AppService.SyncFollow(true)
   const updated = report.updatedCount ?? 0
@@ -157,7 +183,7 @@ function openCtxMenu(ev: MouseEvent, row: EntryRow) {
 }
 
 onMounted(async () => {
-  await Promise.all([refresh(), loadEnv()])
+  await Promise.all([refresh(), loadEnv(), loadAutorun()])
   unlisten = Events.On('entries-changed', () => { void refresh() })
 })
 
@@ -234,8 +260,14 @@ onUnmounted(() => {
   </div>
 
   <div class="statusbar">
-    <span class="item">共 {{ rows.length }} 条映射{{ groupFilter || searchText ? `（显示 ${filteredRows.length}）` : '' }}</span>
+    <span class="item clickable" :title="env?.dataDir ?? ''" @click="openDataDir"
+          style="max-width: 380px; overflow: hidden; text-overflow: ellipsis">
+      📁 {{ shortDataDir }}
+    </span>
     <span class="item">{{ env?.elevated ? '🔑 管理员' : '👁️ 只读' }}</span>
+    <span class="item clickable" title="点击切换开机自启（计划任务，需要管理员权限）" @click="toggleAutorun">
+      🚀 自启：{{ autorun ? '开' : '关' }}
+    </span>
     <span class="item">{{ env?.user }}</span>
     <span class="item">v{{ env?.appVersion }}</span>
   </div>

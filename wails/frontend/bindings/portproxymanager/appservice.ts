@@ -211,6 +211,13 @@ export function LoadImportDocument(file: string): $CancellablePromise<backup$0.D
 }
 
 /**
+ * OpenDataDir 用资源管理器打开数据目录。
+ */
+export function OpenDataDir(): $CancellablePromise<$models.MutationResult> {
+    return $Call.ByID(3774760905);
+}
+
+/**
  * PreviewImport 计算导入差异（不执行）。
  */
 export function PreviewImport(file: string): $CancellablePromise<backup$0.PreviewResult> {

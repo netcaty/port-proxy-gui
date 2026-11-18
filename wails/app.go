@@ -8,6 +8,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"sort"
 	"strings"
 	"sync"
@@ -554,6 +555,15 @@ func (a *AppService) EnableAutorun() autorun.Result {
 
 // DisableAutorun 取消开机自启。
 func (a *AppService) DisableAutorun() autorun.Result { return autorun.Disable() }
+
+// OpenDataDir 用资源管理器打开数据目录。
+func (a *AppService) OpenDataDir() MutationResult {
+	cmd := exec.Command("explorer.exe", a.paths.DataDir)
+	if err := cmd.Start(); err != nil {
+		return mutationFail("打开数据目录失败：" + err.Error())
+	}
+	return MutationResult{Ok: true}
+}
 
 // ---- 日志查看 ----
 
