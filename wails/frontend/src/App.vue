@@ -98,6 +98,14 @@ function openAdd() {
   showEntryDialog.value = true
 }
 
+// 双击表格空白处 = 新增映射；行内双击由行自身处理（编辑），此处排除
+function onTableDblClick(ev: MouseEvent) {
+  if (!env.value?.elevated) return
+  const target = ev.target as HTMLElement
+  if (target.closest('tr[data-key], thead, th')) return
+  openAdd()
+}
+
 function openEdit(row?: EntryRow) {
   if (!row) return
   editTarget.value = row
@@ -216,7 +224,7 @@ onUnmounted(() => {
     <button @click="showLogViewer = true">日志</button>
   </div>
 
-  <div class="table-wrap" @click="ctxVisible = false">
+  <div class="table-wrap" @click="ctxVisible = false" @dblclick="onTableDblClick">
     <table class="grid">
       <thead>
         <tr>
@@ -231,7 +239,7 @@ onUnmounted(() => {
         </tr>
       </thead>
       <tbody>
-        <tr v-for="r in filteredRows" :key="r.key"
+        <tr v-for="r in filteredRows" :key="r.key" data-key="1"
             :class="{ selected: r.key === selectedKey }"
             @click="selectedKey = r.key; ctxVisible = false"
             @dblclick="openEdit(r)"
@@ -248,7 +256,7 @@ onUnmounted(() => {
         <tr v-if="filteredRows.length === 0">
           <td colspan="8">
             <div class="empty-tip">
-              {{ rows.length === 0 ? '还没有任何映射。点上方"新增映射"创建第一条。' : '没有符合过滤条件的映射。' }}
+              {{ rows.length === 0 ? '还没有任何映射：双击空白处或点上方"新增映射"创建第一条。' : '没有符合过滤条件的映射。' }}
             </div>
           </td>
         </tr>
