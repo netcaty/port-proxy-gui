@@ -18,20 +18,14 @@ public sealed class EntryDialog : Form
     private readonly NumericUpDown _listenPort = new();
     private readonly ComboBox _connectAddress = new();
     private readonly ToolTip _tip = new();
-    private List<AddressHint> _addressHints = new();
-    private string? _pendingSelectionAddress;
-    private string? _pendingSelectionDisplay;
+    private List<CandidateItem> _candidateItems = new();
     private int _populateVersion;
-    private int _selectionVersion;
     private readonly System.Windows.Forms.Timer _guestRefreshTimer = new() { Interval = ProbeTimeouts.HintRefreshMs };
     private bool _populatingHints;
     private readonly NumericUpDown _connectPort = new();
-    private readonly RadioButton _followNo = new();
-    private readonly RadioButton _followYes = new();
-    private List<FollowChoice> _followChoices = new();
-    private string _fixedAddressText = "127.0.0.1";
-    private bool _populatingFollow;
+    private readonly CheckBox _followToggle = new();
     private FollowTarget? _initialFollowTarget;
+    private bool _followStoppedByUser;
     private readonly TextBox _nameBox = new();
     private readonly ComboBox _groupBox = new();
     private readonly TextBox _noteBox = new();
@@ -40,9 +34,19 @@ public sealed class EntryDialog : Form
     private readonly Label _errorLabel = new();
     private readonly Label _testResult = new();
 
-    private sealed record FollowChoice(
-        FollowTarget? Target, AddressHint? Hint, string Display, bool IsCurrentMatch = false)
+    /// <summary>
+    /// 目标候选下拉里的一项：探测到的地址（可跟随与否由 Hint 决定）、
+    /// 编辑离线跟随条目时的兜底项，或"手动填写 IP"入口。
+    /// </summary>
+    private sealed record CandidateItem(
+        AddressHint? Hint, FollowTarget? FallbackTarget, string Display)
     {
+        public bool IsManualEntry => Hint is null && FallbackTarget is null;
+
+        public bool IsFollowable =>
+            (Hint is not null && TargetFollowService.IsFollowable(Hint))
+            || FallbackTarget is not null;
+
         public override string ToString() => Display;
     }
 
@@ -69,10 +73,7 @@ public sealed class EntryDialog : Form
 
         BuildUi();
         LoadValues();
-
-        // 编辑已有跟随条目时切到跟随模式；CheckedChanged 会按模式填充候选
-        _followYes.Checked = _initialFollowTarget is not null;
-
+        PopulateCandidates();
         UpdatePreview();
         GuestHintCache.RefreshIfStale();
 
@@ -149,34 +150,27 @@ public sealed class EntryDialog : Form
         _listenPort.TextChanged += (_, _) => UpdatePreview();
         AddRow(table, "监听地址", _listenAddress, control2: _listenPort);
 
-        // 目标（固定 IP / 跟随目标 单选 + 单一目标输入框）
-        _followNo.Text = "固定 IP";
-        _followYes.Text = "跟随目标";
-        _followNo.AutoSize = true;
-        _followYes.AutoSize = true;
-        _followNo.Checked = true;
-        _followNo.Margin = new Padding(0, 7, 2, 0);
-        _followYes.Margin = new Padding(0, 7, 6, 0);
-        _followNo.CheckedChanged += (_, _) => ApplyFollowMode();
-        _followYes.CheckedChanged += (_, _) => ApplyFollowMode();
+        // 目标候选（单一输入框：手输 IP 或选择探测到的地址/设备，可跟随的项可打开跟随开关）
+        _followToggle.Text = "跟随";
+        _followToggle.AutoSize = true;
+        _followToggle.Enabled = false;
+        _followToggle.Margin = new Padding(0, 7, 6, 0);
+        _followToggle.CheckedChanged += (_, _) => UpdatePreview();
 
         _connectAddress.DropDownStyle = ComboBoxStyle.DropDown;
-        _connectAddress.Text = _fixedAddressText;
+        _connectAddress.Text = "127.0.0.1";
         _connectAddress.Anchor = AnchorStyles.Left | AnchorStyles.Right;
-        _connectAddress.TextChanged += (_, _) => UpdatePreview();
-        _connectAddress.DropDown += (_, _) => PopulateForCurrentMode();
-        // 只有在用户真正从下拉里选中时才回填，程序填充 Items 不应覆盖手输地址
-        _connectAddress.SelectionChangeCommitted += (_, _) =>
+        _connectAddress.TextChanged += (_, _) =>
         {
-            if (!IsFollowMode) ApplySelectedHint();
+            UpdateFollowToggle();
+            UpdatePreview();
         };
-        _connectAddress.SelectedIndexChanged += (_, _) =>
-        {
-            if (IsFollowMode) ApplyFollowSelection();
-        };
+        _connectAddress.DropDown += (_, _) => PopulateCandidates();
+        _connectAddress.SelectionChangeCommitted += (_, _) => OnCandidateCommitted();
+        _connectAddress.SelectedIndexChanged += (_, _) => OnSelectedCandidateChanged();
         _connectAddress.DropDownClosed += (_, _) => OnAddressDropDownClosed();
         _tip.SetToolTip(_connectAddress,
-            "固定 IP：可手输或选择自动探测到的地址；跟随目标：WSL / 虚拟机 IP 变化时自动更新。");
+            "可手输 IP，或选择网关 / 局域网设备 / WSL / 虚拟机 / 沙盒；可跟随的设备可打开跟随开关。");
 
         _connectPort.Minimum = 1;
         _connectPort.Maximum = 65535;
@@ -196,8 +190,7 @@ public sealed class EntryDialog : Form
             Dock = DockStyle.Left,
             Margin = new Padding(0),
         };
-        modeFlow.Controls.Add(_followNo);
-        modeFlow.Controls.Add(_followYes);
+        modeFlow.Controls.Add(_followToggle);
 
         var targetLayout = new TableLayoutPanel
         {
@@ -214,7 +207,7 @@ public sealed class EntryDialog : Form
 
         var targetPanel = new Panel { Anchor = AnchorStyles.Left | AnchorStyles.Right, Height = 30 };
         targetPanel.Controls.Add(targetLayout);
-        AddRow(table, "目标", targetPanel, control2: _connectPort);
+        AddRow(table, "目标候选", targetPanel, control2: _connectPort);
 
         // 连通性测试
         var testButton = new Button
@@ -366,7 +359,6 @@ public sealed class EntryDialog : Form
         _listenAddress.Text = _existing.NormalizedListen;
         _listenPort.Value = Math.Clamp(_existing.ListenPort, 1, 65535);
         _connectAddress.Text = _existing.NormalizedConnect;
-        _fixedAddressText = _existing.NormalizedConnect;
         _connectPort.Value = Math.Clamp(_existing.ConnectPort, 1, 65535);
 
         if (_existingMeta is not null)
@@ -379,161 +371,174 @@ public sealed class EntryDialog : Form
         }
     }
 
-    private bool IsFollowMode => _followYes.Checked;
-
-    /// <summary>展开下拉时按当前模式填充候选；过期就顺手触发一次后台刷新。</summary>
-    private void PopulateForCurrentMode()
-    {
-        if (IsFollowMode)
-        {
-            GuestHintCache.RefreshIfStale();
-            PopulateFollowChoices();
-        }
-        else
-        {
-            PopulateAddressHints();
-        }
-    }
-
-    /// <summary>按单选按钮切换固定 IP / 跟随目标模式，并重建目标输入框内容。</summary>
-    private void ApplyFollowMode()
-    {
-        if (IsFollowMode)
-        {
-            // 记住固定 IP，切回来时恢复
-            if (TryExtractAddress(_connectAddress.Text) is { } fixedIp)
-                _fixedAddressText = fixedIp;
-
-            _connectAddress.DropDownStyle = ComboBoxStyle.DropDownList;
-            PopulateFollowChoices();
-        }
-        else
-        {
-            _connectAddress.DropDownStyle = ComboBoxStyle.DropDown;
-
-            // 句柄未创建（构造期间）时不填充，等下拉打开或 Shown 后再填
-            if (_connectAddress.IsHandleCreated) PopulateAddressHints();
-
-            SetConnectAddress(_fixedAddressText);
-        }
-
-        UpdatePreview();
-    }
-
     /// <summary>
-    /// 重建跟随目标下拉。当前探测到的 WSL / 虚拟机会排在前面；
-    /// 已保存但当前探测不到的目标也保留一项，避免编辑离线虚拟机时丢配置。
+    /// 重建目标候选下拉：第一项为"手动填写 IP"入口，其后是网关 / 局域网设备 /
+    /// 已确认运行中的 WSL / 虚拟机 / 沙盒。编辑离线跟随条目时补一个兜底项。
     /// </summary>
-    private void PopulateFollowChoices()
+    private void PopulateCandidates()
     {
-        if (_populatingFollow) return;
+        if (_populatingHints) return;
 
-        _populatingFollow = true;
+        _populatingHints = true;
         try
         {
-            var previous = (_connectAddress.SelectedItem as FollowChoice)?.Target
-                ?? _initialFollowTarget;
+            _populateVersion++;
+            _connectAddress.SelectedIndex = -1;
 
             // 启动时已预热；这里只读缓存，避免展开下拉时被 arp.exe / wsl.exe 阻塞。
-            var hints = GuestHintCache.Snapshot
-                .Where(TargetFollowService.IsFollowable)
-                // 同一台虚拟机可能有多块网卡/多个地址，优先按 MAC 合并成一条
-                .GroupBy(h => h.Mac ?? h.Id ?? h.Address, StringComparer.OrdinalIgnoreCase)
-                .Select(g => g.First())
-                .OrderBy(FollowOrder)   // 稳定排序：保留探测结果内部的主地址顺序
-                .ToList();
+            var snapshot = GuestHintCache.Snapshot;
+            var source = snapshot.Count > 0
+                ? snapshot
+                : NetworkHintService.FilterUnconfirmedGuests(NetworkHintService.GetHints());
 
-            var matched = false;
-            var choices = new List<FollowChoice>();
+            var sandboxMacs = new HashSet<string>(
+                source
+                    .Where(h => h.Category.Contains("沙盒", StringComparison.Ordinal) && h.Mac is not null)
+                    .Select(h => h.Mac!),
+                StringComparer.OrdinalIgnoreCase);
 
-            foreach (var hint in hints)
+            var merged = new List<AddressHint>();
+            var seenAddresses = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var seenSandboxMacs = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+            foreach (var hint in source)
             {
-                var target = FollowTarget.FromHint(hint);
-                if (target is null) continue;
+                // 沙盒同一 MAC 可能出现在多个虚拟交换机上；只保留优先级最高的一条
+                if (hint.Mac is not null
+                    && sandboxMacs.Contains(hint.Mac)
+                    && !seenSandboxMacs.Add(hint.Mac))
+                    continue;
 
-                var current = previous is not null && TargetFollowService.Matches(hint, previous);
-                matched |= current;
-
-                choices.Add(new FollowChoice(
-                    target, hint, $"{target.Display} → {hint.Address}", current));
+                if (seenAddresses.Add(hint.Address)) merged.Add(hint);
             }
 
-            if (previous is not null && !matched)
+            var items = new List<CandidateItem>
             {
-                choices.Add(new FollowChoice(
-                    previous, null, $"{previous.Display}（当前未检测到，保留原地址）", true));
+                new(null, null, "— 手动填写 IP —"),
+            };
+
+            foreach (var hint in merged)
+            {
+                var followable = TargetFollowService.IsFollowable(hint);
+                items.Add(new CandidateItem(
+                    hint,
+                    followable ? FollowTarget.FromHint(hint) : null,
+                    hint.Display));
             }
 
-            _followChoices = choices;
+            // 正在跟随的条目：优先选中对应候选；目标未检测到时补一个兜底项
+            var previousTarget = _followStoppedByUser ? null : _initialFollowTarget;
+            if (previousTarget is not null)
+            {
+                var matched = items.FirstOrDefault(i =>
+                    i.Hint is not null && TargetFollowService.Matches(i.Hint, previousTarget));
+
+                if (matched is null)
+                {
+                    var fallback = new CandidateItem(
+                        null, previousTarget,
+                        $"{previousTarget.Display}（当前未检测到，保留原地址）");
+                    items.Add(fallback);
+                }
+            }
+
+            _candidateItems = items;
 
             _connectAddress.BeginUpdate();
             _connectAddress.Items.Clear();
-            foreach (var choice in choices) _connectAddress.Items.Add(choice);
+            foreach (var item in items) _connectAddress.Items.Add(item);
             _connectAddress.EndUpdate();
 
-            _connectAddress.SelectedItem =
-                choices.FirstOrDefault(c => c.IsCurrentMatch)
-                ?? choices.FirstOrDefault();
+            if (previousTarget is not null)
+            {
+                _connectAddress.SelectedItem =
+                    items.FirstOrDefault(i =>
+                        i.Hint is not null && TargetFollowService.Matches(i.Hint, previousTarget))
+                    ?? items.FirstOrDefault(i => i.FallbackTarget == previousTarget);
+                _followToggle.Checked = true;
+            }
+            else
+            {
+                _connectAddress.SelectedIndex = -1;
+                _followToggle.Checked = false;
+
+                var current = _connectAddress.Text;
+                if (TryExtractAddress(current) is { } extracted) current = extracted;
+
+                if (current.Length > 0)
+                    _connectAddress.Text = current;
+            }
         }
         catch (Exception ex)
         {
-            LogService.Current?.Warn($"填充跟随目标失败：{ex.Message}");
+            LogService.Current?.Warn($"填充目标候选失败：{ex.Message}");
         }
         finally
         {
-            _populatingFollow = false;
+            _populatingHints = false;
         }
 
-        // SelectedIndexChanged 被 _populatingFollow 守卫拦住了，这里补一次预览
+        UpdateFollowToggle();
         UpdatePreview();
-        ResizeDropDownWidth(_followChoices.Select(c => c.Display).ToList());
+        ResizeDropDownWidth(_candidateItems.Select(i => i.Display).ToList());
     }
 
-    private static int FollowOrder(AddressHint hint) => hint.Kind switch
+    /// <summary>跟随开关只对可跟随的设备（WSL / 虚拟机 / 沙盒）可点击。</summary>
+    private void UpdateFollowToggle()
     {
-        "wsl" => 0,
-        "hyperv" => 1,
-        "wsb" => 2,
-        _ => 3,
-    };
+        var item = _connectAddress.SelectedItem as CandidateItem;
+        var followable = item?.IsFollowable == true;
 
-    private FollowTarget? CurrentFollowTarget()
-    {
-        // 固定 IP 模式即"不跟随"；跟随模式下取当前选中的目标
-        if (!IsFollowMode) return null;
-        return (_connectAddress.SelectedItem as FollowChoice)?.Target ?? _initialFollowTarget;
+        _followToggle.Enabled = followable;
+        if (!followable) _followToggle.Checked = false;
     }
 
-    private FollowChoice? CurrentFollowChoice()
+    /// <summary>用户在下拉里提交了某个候选：手动填写项清空文本，其余保留展示文本。</summary>
+    private void OnCandidateCommitted()
     {
-        if (!IsFollowMode) return null;
-        return _connectAddress.SelectedItem as FollowChoice;
+        if (_populatingHints) return;
+
+        if (_connectAddress.SelectedItem is CandidateItem item)
+        {
+            if (item.IsManualEntry) _connectAddress.Text = string.Empty;
+            _followStoppedByUser = false;
+        }
+        else
+        {
+            // 手输状态
+            _followStoppedByUser = true;
+        }
+
+        UpdateFollowToggle();
+        UpdatePreview();
     }
 
-    private void ApplyFollowSelection()
+    private void OnSelectedCandidateChanged()
     {
-        if (_populatingFollow) return;
+        if (_populatingHints) return;
+
+        UpdateFollowToggle();
         UpdatePreview();
     }
 
     /// <summary>
-    /// 当前生效的目标地址：跟随模式取选中目标的探测地址（离线时保留原地址），
-    /// 固定 IP 模式取输入框文本。
+    /// 当前生效的目标地址：选中候选取其探测地址（离线跟随保留原地址），
+    /// 手输状态取输入框文本。
     /// </summary>
     private string GetCurrentConnectAddress()
     {
-        if (!IsFollowMode) return _connectAddress.Text.Trim();
+        if (_connectAddress.SelectedItem is CandidateItem item)
+        {
+            if (item.Hint?.Address is { Length: > 0 } hintAddress) return hintAddress;
+            return _existing?.NormalizedConnect ?? string.Empty;
+        }
 
-        var address = CurrentFollowChoice()?.Hint?.Address;
-        if (!string.IsNullOrEmpty(address)) return address;
-
-        // 离线跟随：保留条目原本的目标地址
-        return _existing?.NormalizedConnect ?? string.Empty;
+        return TryExtractAddress(_connectAddress.Text) ?? _connectAddress.Text.Trim();
     }
 
     /// <summary>
     /// 窗口显示后等待一次候选刷新（如果启动预热还在跑就复用它），
-    /// 完成后按当前模式补填下拉。用户正在展开下拉时不打断选择。
+    /// 完成后补填下拉。用户正在展开下拉时不打断选择。
     /// </summary>
     private async Task RefreshCandidatesWhenReadyAsync()
     {
@@ -543,8 +548,7 @@ public sealed class EntryDialog : Form
 
             if (IsDisposed || _connectAddress.DroppedDown) return;
 
-            if (IsFollowMode) PopulateFollowChoices();
-            else PopulateAddressHints();
+            PopulateCandidates();
         }
         catch (Exception ex)
         {
@@ -573,106 +577,8 @@ public sealed class EntryDialog : Form
         ResizePreview();
     }
 
-    /// <summary>
-    /// 填充目标地址候选。程序启动时已经在后台预热过完整候选（网关、ARP 邻居、
-    /// WSL、虚拟机、沙盒、设备名），打开下拉只读缓存快照，不启动探测。
-    /// 只有缓存仍为空时（首次启动尚未完成）才同步取一次网关/ARP 兜底。
-    /// </summary>
-    private void PopulateAddressHints()
-    {
-        if (_populatingHints) return;
-
-        _populatingHints = true;
-        try
-        {
-            var current = _connectAddress.Text;
-            var selectionStart = _connectAddress.SelectionStart;
-            var populateVersion = ++_populateVersion;
-            var selectionVersion = _selectionVersion;
-
-            // 先清掉上一次的选择，否则重建 Items 后原生控件可能按旧索引
-            // 重新选中一项，把编辑框改成整条展示文本。
-            _connectAddress.SelectedIndex = -1;
-
-            var snapshot = GuestHintCache.Snapshot;
-            var source = snapshot.Count > 0
-                ? snapshot
-                : NetworkHintService.FilterUnconfirmedGuests(NetworkHintService.GetHints());
-
-            var sandboxMacs = new HashSet<string>(
-                source
-                    .Where(h => h.Category.Contains("沙盒", StringComparison.Ordinal) && h.Mac is not null)
-                    .Select(h => h.Mac!),
-                StringComparer.OrdinalIgnoreCase);
-
-            var merged = new List<AddressHint>();
-            var seenAddresses = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            var seenSandboxMacs = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-
-            foreach (var hint in source)
-            {
-                // 沙盒同一 MAC 可能出现在多个虚拟交换机上；只保留优先级最高的一条
-                if (hint.Mac is not null
-                    && sandboxMacs.Contains(hint.Mac)
-                    && !seenSandboxMacs.Add(hint.Mac))
-                    continue;
-
-                if (seenAddresses.Add(hint.Address)) merged.Add(hint);
-            }
-
-            _addressHints = merged;
-
-            // 旧状态可能是整条"IP · 说明"，还原成纯 IP 再保留
-            if (TryExtractAddress(current) is { } extracted) current = extracted;
-
-            _connectAddress.BeginUpdate();
-            _connectAddress.Items.Clear();
-            foreach (var hint in merged) _connectAddress.Items.Add(hint.Display);
-            _connectAddress.EndUpdate();
-
-            // Items 重建后控件可能自动选中第一项；先清掉选择，再恢复用户手输的内容
-            _connectAddress.SelectedIndex = -1;
-            if (current.Length > 0)
-            {
-                _connectAddress.Text = current;
-                _connectAddress.SelectionStart = Math.Min(selectionStart, current.Length);
-            }
-
-            // 原生 ComboBox 在下拉打开后，会把与某项展示文本前缀匹配的输入
-            // 自动补全成整条展示文本（例如手输 IP 恰好是列表里某项的开头）。
-            // 等它处理完这一轮消息后再恢复纯 IP；期间若用户已选中某项则不再覆盖。
-            BeginInvoke(new Action(() =>
-            {
-                if (IsDisposed || !_connectAddress.DroppedDown) return;
-                if (populateVersion != _populateVersion || selectionVersion != _selectionVersion) return;
-
-                var text = _connectAddress.Text;
-                var isNativeDisplay = _addressHints.Any(h =>
-                    string.Equals(h.Display, text, StringComparison.Ordinal))
-                    || TryExtractAddress(text) is not null;
-                if (!isNativeDisplay) return;
-
-                _connectAddress.SelectedIndex = -1;
-                _connectAddress.Text = current;
-                _connectAddress.SelectionStart = Math.Min(selectionStart, current.Length);
-            }));
-
-            ResizeDropDownWidth(merged.Select(h => h.Display).ToList());
-        }
-        catch (Exception ex)
-        {
-            LogService.Current?.Warn($"填充地址候选失败：{ex.Message}");
-        }
-        finally
-        {
-            _populatingHints = false;
-        }
-    }
-
     private void OnAddressDropDownClosed()
     {
-        NormalizeCommittedSelection();
-
         // 打开期间不刷新；关闭后在后台更新，下次打开生效
         if (!_guestRefreshTimer.Enabled) _guestRefreshTimer.Start();
         GuestHintCache.RefreshIfStale();
@@ -709,83 +615,6 @@ public sealed class EntryDialog : Form
         catch (Exception ex)
         {
             LogService.Current?.Warn($"调整地址下拉宽度失败：{ex.Message}");
-        }
-    }
-
-    /// <summary>选中下拉项时只把 IP 填进文本框，不带上后面的说明。</summary>
-    private void ApplySelectedHint()
-    {
-        if (_populatingHints) return;
-
-        var index = _connectAddress.SelectedIndex;
-        if (index < 0 || index >= _addressHints.Count) return;
-
-        var hint = _addressHints[index];
-        _selectionVersion++;
-        _pendingSelectionAddress = hint.Address;
-        _pendingSelectionDisplay = hint.Display;
-
-        SetConnectAddress(hint.Address);
-
-        // 原生 ComboBox 在提交/关闭时会再把编辑框改成整条 Display 文本，
-        // 这里先排一次恢复；DropDownClosed 里再兜底一次。
-        BeginInvoke(new Action(() =>
-        {
-            if (IsDisposed) return;
-            NormalizeCommittedSelectionCore(consume: false);
-        }));
-    }
-
-    private void NormalizeCommittedSelection()
-    {
-        if (_pendingSelectionAddress is null) return;
-
-        BeginInvoke(new Action(() =>
-        {
-            if (IsDisposed) return;
-            NormalizeCommittedSelectionCore(consume: true);
-        }));
-    }
-
-    /// <summary>
-    /// 把编辑框从整条展示文本恢复成纯 IP。支持新格式 "IP - type:id"
-    /// 和旧格式 "IP · 说明（来源）"。用户自己改了别的内容时不覆盖；
-    /// consume 表示这次是最终收尾。
-    /// </summary>
-    private void NormalizeCommittedSelectionCore(bool consume)
-    {
-        var address = _pendingSelectionAddress;
-        if (address is null) return;
-
-        var display = _pendingSelectionDisplay;
-        var text = _connectAddress.Text;
-        var looksNative = text.Length == 0
-            || text == address
-            || (display is not null && text == display);
-
-        if (looksNative) SetConnectAddress(address);
-
-        if (consume)
-        {
-            _pendingSelectionAddress = null;
-            _pendingSelectionDisplay = null;
-        }
-    }
-
-    private void SetConnectAddress(string address)
-    {
-        _connectAddress.Text = address;
-
-        // ComboBox 从长下拉文本（"IP - type:id"）切回纯 IP 时可能保留横向滚动偏移，
-        // 表现为只看到 IP 的后半段。先把编辑框拉回开头，再决定光标位置。
-        _connectAddress.SelectionStart = 0;
-        _connectAddress.SelectionLength = 0;
-
-        if (_connectAddress.Enabled)
-        {
-            // 手输/可选状态下光标放末尾，方便继续修改；纯 IP 长度足够显示，不会再次滚动。
-            _connectAddress.SelectionStart = address.Length;
-            _connectAddress.SelectionLength = 0;
         }
     }
 
@@ -876,9 +705,9 @@ public sealed class EntryDialog : Form
     {
         _errorLabel.Text = string.Empty;
 
-        if (IsFollowMode && GetCurrentConnectAddress().Length == 0)
+        if (_followToggle.Checked && GetCurrentConnectAddress().Length == 0)
         {
-            _errorLabel.Text = "请选择跟随目标，或切回固定 IP 手动输入。";
+            _errorLabel.Text = "跟随目标当前未检测到，且没有已保存的目标地址。";
             return;
         }
 
@@ -926,7 +755,12 @@ public sealed class EntryDialog : Form
             return;
         }
 
-        var follow = IsFollowMode ? CurrentFollowTarget() : null;
+        var selectedItem = _connectAddress.SelectedItem as CandidateItem;
+        var follow = _followToggle.Checked && selectedItem is not null
+            ? selectedItem.Hint is not null
+                ? FollowTarget.FromHint(selectedItem.Hint)
+                : selectedItem.FallbackTarget
+            : null;
 
         Result = entry;
         ResultMeta = new EntryMeta
