@@ -44,7 +44,7 @@ func TestMatchesWSLByDistroName(t *testing.T) {
 }
 
 func TestIsFollowable(t *testing.T) {
-	gw := hints.AddressHint{Address: "192.168.1.1", Kind: str("gw")}
+	gw := hints.AddressHint{Address: "192.168.1.1", Kind: str("gateway")}
 	if IsFollowable(gw) {
 		t.Errorf("网关不可跟随")
 	}

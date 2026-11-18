@@ -9,7 +9,7 @@
 ```
 wails3 dev       # 开发模式（前端热重载）
 wails3 build     # 生产构建，产物 bin/portproxymanager.exe（单文件，约 11 MB）
-wails3 build:cli # 命令行伴生程序 bin/portproxymanager-cli.exe（console 子系统）
+wails3 task build:cli   # 命令行伴生程序 bin/portproxymanager-cli.exe（console 子系统，注意须带 task 子命令）
 ```
 
 命令行场景（--dump / --hints）请用 `portproxymanager-cli.exe`：主程序是 GUI 子系统，交互式 cmd 不等待它，提示符会先返回。

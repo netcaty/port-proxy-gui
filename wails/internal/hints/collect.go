@@ -73,7 +73,7 @@ func collect(includeNeighbors bool) []AddressHint {
 
 	network := EnumerateLocalNetwork()
 	for _, gw := range network.Gateways {
-		add(gw.Address, 0, "默认网关", strPtr(gw.Label), nil, nil, strPtr("gw"), strPtr(gw.Label))
+		add(gw.Address, 0, "默认网关", strPtr(gw.Label), nil, nil, strPtr("gateway"), strPtr(gw.Label))
 	}
 	if includeNeighbors {
 		AddNeighbors(func(address string, priority int, category string, source *string, mac *string, kind *string, id *string) {

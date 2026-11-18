@@ -20,7 +20,7 @@ public sealed record AddressHint(
 {
     /// <summary>
     /// 下拉里显示的文本，统一为 "ip - type:id"。
-    /// type 取 wsl / wsb / vm / hyperv；网关和普通局域网设备用 gw / lan。
+    /// type 取 wsl / wsb / vm / hyperv；网关和普通局域网设备用 gateway / lan。
     /// id 是对应的标识（发行版名、.wsb 文件名、虚拟机名等）。
     /// 选中后只取前面的纯 IP。
     ///
@@ -156,7 +156,7 @@ public static class NetworkHintService
         }
 
         foreach (var gateway in network.Gateways)
-            Add(gateway.Address, 0, "默认网关", gateway.Label, kind: "gw", id: gateway.Label);
+            Add(gateway.Address, 0, "默认网关", gateway.Label, kind: "gateway", id: gateway.Label);
 
         if (includeNeighbors) AddNeighbors(Add, network);
 
