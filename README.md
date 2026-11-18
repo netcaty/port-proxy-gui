@@ -93,8 +93,9 @@ PortProxyManager.exe [选项]
 
 --tray              启动后直接收进托盘
 --dump              只读输出当前全部映射（不需要管理员）
---json              配合 --dump 输出 JSON
---out=<文件>        配合 --dump 同时写入文件
+--hints             探测并输出全部目标地址候选（只读，不需要管理员）
+--json              配合 --dump / --hints 输出 JSON
+--out=<文件>        配合 --dump / --hints 同时写入文件
 --no-elevate        只读模式；写入时提示需要管理员权限
 --data-dir=<路径>   高级：指定数据目录
 -h, --help          显示帮助
@@ -106,8 +107,11 @@ PortProxyManager.exe [选项]
 :: 查看当前映射
 PortProxyManager.exe --dump
 
+:: 探测目标地址候选（WSL / 虚拟机 / 沙盒 / 网关 / 局域网设备）
+PortProxyManager.exe --hints
+
 :: 输出 JSON 给脚本解析
-PortProxyManager.exe --dump --json --out=%TEMP%\portproxy.json
+PortProxyManager.exe --hints --json --out=%TEMP%\hints.json
 ```
 
 ---

@@ -6,6 +6,7 @@ public sealed class CliOptions
     public string? OutFile { get; private set; }
     public bool Tray { get; private set; }
     public bool Dump { get; private set; }
+    public bool Hints { get; private set; }
     public bool SelfTest { get; private set; }
     public bool NoElevate { get; private set; }
     public bool Help { get; private set; }
@@ -42,6 +43,10 @@ public sealed class CliOptions
 
                 case "--dump":
                     options.Dump = true;
+                    break;
+
+                case "--hints":
+                    options.Hints = true;
                     break;
 
                 case "--selftest":

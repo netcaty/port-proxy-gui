@@ -9,7 +9,7 @@ internal static class Program
     private const string ActivateEventName = @"Local\PortProxyManager.Activate";
 
     [STAThread]
-    private static int Main(string[] args)
+    private static async Task<int> Main(string[] args)
     {
         Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
         Application.ThreadException += (_, e) => OnUiException(e.Exception);
@@ -34,6 +34,7 @@ internal static class Program
 
         // 只读模式：不需要提权，也不碰界面
         if (options.Dump) return Cli.Dump(options);
+        if (options.Hints) return await Cli.Hints(options);
 
         var elevated = Elevation.IsElevated;
 

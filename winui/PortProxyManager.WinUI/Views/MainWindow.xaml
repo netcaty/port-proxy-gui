@@ -22,6 +22,12 @@
                 <MenuFlyoutSeparator />
                 <MenuFlyoutItem Command="{x:Bind ViewModel.CopySelectedNetshCommand}" Text="复制 netsh 命令" />
                 <MenuFlyoutItem Command="{x:Bind ViewModel.ProbeSelectedCommand}" Text="测试目标连通性" />
+                <MenuFlyoutSeparator />
+                <MenuFlyoutItem
+                    Command="{x:Bind ViewModel.SyncSelectedFollowCommand}"
+                    Text="立即同步跟随目标"
+                    Visibility="{x:Bind ViewModel.SelectedFollowVisible, Mode=OneWay}" />
+                <MenuFlyoutItem Command="{x:Bind ViewModel.DiagnoseSelectedCommand}" Text="诊断转发链路…" />
             </MenuFlyout>
         </Grid.Resources>
 

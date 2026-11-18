@@ -5,6 +5,7 @@
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
     xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
     xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    xmlns:vm="using:PortProxyManager.WinUI.ViewModels"
     Title="{x:Bind ViewModel.Title, Mode=OneWay}"
     mc:Ignorable="d">
 
@@ -59,7 +60,7 @@
                         Value="{x:Bind ViewModel.ListenPort, Mode=TwoWay}" />
                 </Grid>
 
-                <!-- 目标地址 / 端口 -->
+                <!-- 目标地址 / 端口（可编辑下拉：手输或选自动探测候选） -->
                 <Grid ColumnSpacing="12">
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="104" />
@@ -70,9 +71,23 @@
                         Grid.Column="0"
                         VerticalAlignment="Center"
                         Text="目标地址" />
-                    <TextBox
+                    <ComboBox
+                        x:Name="ConnectBox"
                         Grid.Column="1"
-                        Text="{x:Bind ViewModel.ConnectAddress, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+                        HorizontalAlignment="Stretch"
+                        IsEditable="True"
+                        IsEnabled="{x:Bind ViewModel.ConnectEnabled, Mode=OneWay}"
+                        ItemsSource="{x:Bind ViewModel.AddressOptions, Mode=OneWay}"
+                        PlaceholderText="IP 或选择自动探测的虚拟机、局域网设备"
+                        SelectionChanged="OnConnectSelectionChanged"
+                        TextSubmitted="OnConnectTextSubmitted"
+                        Text="{x:Bind ViewModel.ConnectAddress, Mode=OneWay}">
+                        <ComboBox.ItemTemplate>
+                            <DataTemplate x:DataType="vm:AddressOptionRow">
+                                <TextBlock Text="{x:Bind Display}" />
+                            </DataTemplate>
+                        </ComboBox.ItemTemplate>
+                    </ComboBox>
                     <NumberBox
                         Grid.Column="2"
                         Header="端口"
@@ -82,6 +97,36 @@
                         SmallChange="1"
                         SpinButtonPlacementMode="Compact"
                         Value="{x:Bind ViewModel.ConnectPort, Mode=TwoWay}" />
+                </Grid>
+
+                <!-- 目标跟随（WSL / 虚拟机 IP 变化时自动更新目标地址） -->
+                <Grid ColumnSpacing="12">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="104" />
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="120" />
+                    </Grid.ColumnDefinitions>
+                    <TextBlock
+                        Grid.Column="0"
+                        VerticalAlignment="Center"
+                        Text="目标跟随" />
+                    <ComboBox
+                        Grid.Column="1"
+                        HorizontalAlignment="Stretch"
+                        ItemsSource="{x:Bind ViewModel.FollowOptions, Mode=OneWay}"
+                        PlaceholderText="跟随 WSL / 虚拟机地址"
+                        SelectedItem="{x:Bind ViewModel.SelectedFollow, Mode=TwoWay}">
+                        <ComboBox.ItemTemplate>
+                            <DataTemplate x:DataType="vm:FollowChoiceRow">
+                                <TextBlock Text="{x:Bind Display}" />
+                            </DataTemplate>
+                        </ComboBox.ItemTemplate>
+                    </ComboBox>
+                    <Button
+                        Grid.Column="2"
+                        Command="{x:Bind ViewModel.RefreshFollowCommand}"
+                        Content="刷新"
+                        ToolTipService.ToolTip="立即重新探测 WSL / 虚拟机地址" />
                 </Grid>
 
                 <!-- 连通性测试 -->

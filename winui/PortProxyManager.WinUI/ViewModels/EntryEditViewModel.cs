@@ -8,10 +8,42 @@ using PortProxyManager.WinUI.Views;
 
 namespace PortProxyManager.WinUI.ViewModels;
 
+/// <summary>目标地址候选（下拉项）：展示文本 + 选中后回填的纯 IP。</summary>
+public sealed class AddressOptionRow
+{
+    public AddressOptionRow(AddressHint hint)
+    {
+        Hint = hint;
+        Display = hint.Display;
+        Address = hint.Address;
+    }
+
+    public AddressHint Hint { get; }
+    public string Display { get; }
+    public string Address { get; }
+}
+
+/// <summary>目标跟随选择（"不跟随" + 各可跟随目标）。</summary>
+public sealed class FollowChoiceRow
+{
+    public FollowChoiceRow(FollowTarget? target, AddressHint? hint)
+    {
+        Target = target;
+        Hint = hint;
+        Display = target is null
+            ? "不跟随（固定 IP）"
+            : $"{target.Display} → {hint?.Address ?? "（当前未检测到）"}";
+    }
+
+    public FollowTarget? Target { get; }
+    public AddressHint? Hint { get; }
+    public string Display { get; }
+}
+
 /// <summary>
 /// 新增/编辑映射表单。旧版 EntryDialog 的表单逻辑：
-/// family 推断、地址归一化校验、实时等价命令预览、完整 Validator 校验。
-/// 候选地址探测与目标跟随选择器留到阶段二。
+/// family 推断、地址归一化校验、实时等价命令预览、完整 Validator 校验、
+/// 目标地址候选下拉（GuestHintCache）与目标跟随选择器。
 /// </summary>
 public partial class EntryEditViewModel : ObservableObject
 {
@@ -35,6 +67,15 @@ public partial class EntryEditViewModel : ObservableObject
         AutoFamilyLabel, "v4tov4", "v4tov6", "v6tov4", "v6tov6",
     };
 
+    /// <summary>目标地址候选（打开下拉时由 GuestHintCache 快照填充）。</summary>
+    public ObservableCollection<AddressOptionRow> AddressOptions { get; } = new();
+
+    /// <summary>跟随选择项：首项固定"不跟随"。</summary>
+    public ObservableCollection<FollowChoiceRow> FollowOptions { get; } = new();
+
+    private FollowTarget? _initialFollowTarget;
+    private bool _populatingFollow;
+
     public string Title => _existing is null ? "新增端口映射" : "编辑端口映射";
     public string ConfirmText => _existing is null ? "创建" : "保存";
 
@@ -52,6 +93,157 @@ public partial class EntryEditViewModel : ObservableObject
 
     [ObservableProperty]
     public partial double ConnectPort { get; set; } = 80;
+
+    /// <summary>当前选中的跟随项；null = 不跟随。</summary>
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(ConnectEnabled))]
+    public partial FollowChoiceRow? SelectedFollow { get; set; }
+
+    /// <summary>跟随状态下目标地址由探测结果决定，禁止手改（与旧版一致）。</summary>
+    public bool ConnectEnabled => SelectedFollow?.Target is null;
+
+    /// <summary>选择跟随项：禁用手输并回填探测到的地址。</summary>
+    partial void OnSelectedFollowChanged(FollowChoiceRow? value)
+    {
+        if (_populatingFollow) return;
+
+        if (value?.Target is not null && !string.IsNullOrEmpty(value.Hint?.Address))
+            ConnectAddress = value.Hint!.Address;
+
+        UpdatePreview();
+    }
+
+    /// <summary>
+    /// 重建跟随选择项（读 GuestHintCache 快照，不阻塞）。
+    /// 已保存但当前探测不到的目标保留一项，避免编辑离线虚拟机时丢配置。
+    /// </summary>
+    public void PopulateFollowChoices()
+    {
+        if (_populatingFollow) return;
+        _populatingFollow = true;
+
+        try
+        {
+            var previous = SelectedFollow?.Target ?? _initialFollowTarget;
+
+            var choices = new List<FollowChoiceRow> { new(null, null) };
+
+            var hints = GuestHintCache.Snapshot
+                .Where(TargetFollowService.IsFollowable)
+                .GroupBy(h => h.Mac ?? h.Id ?? h.Address, StringComparer.OrdinalIgnoreCase)
+                .Select(g => g.First())
+                .OrderBy(h => h.Kind switch { "wsl" => 0, "hyperv" => 1, "wsb" => 2, _ => 3 })
+                .ToList();
+
+            var matched = false;
+            foreach (var hint in hints)
+            {
+                var target = FollowTarget.FromHint(hint);
+                if (target is null) continue;
+
+                var isCurrent = previous is not null && TargetFollowService.Matches(hint, previous);
+                matched |= isCurrent;
+
+                choices.Add(new FollowChoiceRow(target, hint));
+            }
+
+            if (previous is not null && !matched)
+                choices.Add(new FollowChoiceRow(previous, null));
+
+            FollowOptions.Clear();
+            foreach (var choice in choices) FollowOptions.Add(choice);
+
+            SelectedFollow = choices.FirstOrDefault(c =>
+                (c.Target is null && previous is null)
+                || (c.Target is not null && previous is not null
+                    && TargetFollowService.TargetEquals(c.Target, previous)))
+                ?? choices[0];
+        }
+        catch (Exception ex)
+        {
+            LogService.Current?.Warn($"填充跟随目标失败：{ex.Message}");
+        }
+        finally
+        {
+            _populatingFollow = false;
+        }
+
+        UpdatePreview();
+    }
+
+    [RelayCommand]
+    private async Task RefreshFollowAsync()
+    {
+        try
+        {
+            await GuestHintCache.RefreshNowAsync(force: true);
+            PopulateFollowChoices();
+        }
+        catch (Exception ex)
+        {
+            LogService.Current?.Warn($"刷新跟随目标失败：{ex.Message}");
+        }
+    }
+
+    /// <summary>填充目标地址候选（缓存快照去重；缓存为空时兜底一次网关/ARP）。</summary>
+    public void PopulateAddressHints()
+    {
+        try
+        {
+            var snapshot = GuestHintCache.Snapshot;
+            var source = snapshot.Count > 0
+                ? snapshot
+                : NetworkHintService.FilterUnconfirmedGuests(NetworkHintService.GetHints());
+
+            var sandboxMacs = new HashSet<string>(
+                source.Where(h => h.Category.Contains("沙盒", StringComparison.Ordinal) && h.Mac is not null)
+                    .Select(h => h.Mac!),
+                StringComparer.OrdinalIgnoreCase);
+
+            var merged = new List<AddressOptionRow>();
+            var seenAddresses = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var seenSandboxMacs = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+            foreach (var hint in source)
+            {
+                // 沙盒同一 MAC 可能出现在多个虚拟交换机上，只保留一条
+                if (hint.Mac is not null
+                    && sandboxMacs.Contains(hint.Mac)
+                    && !seenSandboxMacs.Add(hint.Mac))
+                    continue;
+
+                if (seenAddresses.Add(hint.Address))
+                    merged.Add(new AddressOptionRow(hint));
+            }
+
+            AddressOptions.Clear();
+            foreach (var option in merged) AddressOptions.Add(option);
+        }
+        catch (Exception ex)
+        {
+            LogService.Current?.Warn($"填充地址候选失败：{ex.Message}");
+        }
+    }
+
+    /// <summary>用户从候选下拉选中一项：只把纯 IP 填进地址。</summary>
+    public void ApplySelectedHint(AddressOptionRow? option)
+    {
+        if (option is null || _populatingFollow) return;
+        if (SelectedFollow?.Target is not null) return; // 跟随状态下禁手改
+
+        ConnectAddress = option.Address;
+        UpdatePreview();
+    }
+
+    /// <summary>用户手输提交（Enter/失焦）：清洗并更新。</summary>
+    public void SubmitConnectText(string text)
+    {
+        if (SelectedFollow?.Target is not null) return;
+        if (string.Equals(ConnectAddress, text, StringComparison.Ordinal)) return;
+
+        ConnectAddress = text.Trim();
+        UpdatePreview();
+    }
 
     [ObservableProperty]
     public partial string Name { get; set; } = string.Empty;
@@ -112,6 +304,7 @@ public partial class EntryEditViewModel : ObservableObject
         Group = _existingMeta.Group ?? string.Empty;
         Note = _existingMeta.Note ?? string.Empty;
         CreateFirewallRule = _existingMeta.HasFirewallRule;
+        _initialFollowTarget = FollowTarget.FromMeta(_existingMeta);
     }
 
     private string ResolveFamily() =>
@@ -219,12 +412,15 @@ public partial class EntryEditViewModel : ObservableObject
             Note = Trimmed(Note),
             HasFirewallRule = CreateFirewallRule,
             CreatedAt = _existingMeta?.CreatedAt ?? DateTimeOffset.Now,
-            // 目标跟随在阶段二接入；这里显式置空避免误写入跟随标识
-            FollowKind = null,
-            FollowId = null,
-            FollowMac = null,
-            FollowLabel = null,
         };
+
+        // 目标跟随：跟随项来自下拉选择；不跟随则清空跟随标识
+        var follow = SelectedFollow?.Target;
+        ResultMeta.FollowKind = follow?.Kind;
+        ResultMeta.FollowId = follow?.Id;
+        ResultMeta.FollowMac = follow?.Mac;
+        ResultMeta.FollowLabel = follow?.Label;
+
         Confirmed = true;
 
         CloseRequested?.Invoke();

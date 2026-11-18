@@ -1,5 +1,7 @@
 using Microsoft.UI.Xaml;
+using Microsoft.UI.Xaml.Controls;
 using PortProxyManager.Models;
+using PortProxyManager.Services;
 using PortProxyManager.WinUI.ViewModels;
 using Windows.Graphics;
 
@@ -27,20 +29,44 @@ public sealed partial class EntryEditWindow : Window
         AppWindow.SetIcon("Assets/AppIcon.ico");
 
         ViewModel.CloseRequested += () => Close();
+        Closed += (_, _) => _open = null;
 
         // Window 没有 Loaded 事件，挂在根布局上；
         // Resize 用物理像素，逻辑尺寸按主窗口测得的渲染缩放换算
-        Root.Loaded += (_, _) =>
+        Root.Loaded += async (_, _) =>
         {
-            AppWindow.Resize(new SizeInt32(
+            AppWindow.Resize(new Windows.Graphics.SizeInt32(
                 (int)Math.Round(600 * AppRuntime.UiScale),
                 (int)Math.Round(640 * AppRuntime.UiScale)));
 
             ViewModel.LoadValues();
             ViewModel.RefreshPreview();
-        };
 
-        Closed += (_, _) => _open = null;
+            // 打开下拉即有内容：候选与跟随项先读缓存，后台刷新
+            ViewModel.PopulateAddressHints();
+            ViewModel.PopulateFollowChoices();
+            try
+            {
+                await GuestHintCache.RefreshNowAsync(force: false);
+                ViewModel.PopulateFollowChoices();
+            }
+            catch
+            {
+                // 预热失败不影响表单
+            }
+        };
+    }
+
+    /// <summary>候选下拉选中：只把纯 IP 填进地址。</summary>
+    private void OnConnectSelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        ViewModel.ApplySelectedHint(ConnectBox.SelectedItem as AddressOptionRow);
+    }
+
+    /// <summary>手输提交（Enter）：清洗后更新。</summary>
+    private void OnConnectTextSubmitted(ComboBox sender, ComboBoxTextSubmittedEventArgs args)
+    {
+        ViewModel.SubmitConnectText(args.Text);
     }
 
     /// <summary>

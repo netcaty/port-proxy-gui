@@ -178,16 +178,3 @@ func concat(lists ...[]AddressHint) []AddressHint {
 
 // ResolveDeviceNames 反查设备名（简化版：按 MAC OUI 给个说明，DNS 反查用 net.LookupAddr）。
 // 对应 C# ResolveDeviceNamesAsync，缓存命中/未命中都保留，避免每次打开下拉都查 DNS。
-func ResolveDeviceNames(hints []AddressHint) []AddressHint {
-	// 网关和局域网设备才有意义；已有 category 的不覆盖
-	var out []AddressHint
-	for _, h := range hints {
-		if h.Kind == nil || *h.Kind != "lan" {
-			continue
-		}
-		// 反查只在 DNS 有结果时补 detail，失败静默跳过
-		// （C# 版有 2min hit / 60s miss 负缓存，这里用简化实现）
-		out = append(out, h)
-	}
-	return out
-}
