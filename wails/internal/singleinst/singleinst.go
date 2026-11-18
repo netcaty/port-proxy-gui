@@ -10,9 +10,12 @@ import (
 	"golang.org/x/sys/windows"
 )
 
+// 命名带 .Wails 后缀与 C# 版区分：两版共用数据目录但不能共用单实例锁——
+// 否则 Go 版启动时会把 C# 版的窗口激活（同名 Activate 事件互通）。
+// 注意：名字独立 ≠ 可并发，两版同时运行仍会并发写 meta.json，请勿同时开着。
 const (
-	mutexName    = `Local\PortProxyManager.SingleInstance`
-	activateName = `Local\PortProxyManager.Activate`
+	mutexName    = `Local\PortProxyManager.Wails.SingleInstance`
+	activateName = `Local\PortProxyManager.Wails.Activate`
 )
 
 // Instance 单实例守卫。
