@@ -14,6 +14,11 @@ public static class Cli
 {
     private const int AttachParentProcess = -1;
     private const int MbIconWarning = 0x30;
+    private const int StdOutputHandle = -11;
+    private const int StdErrorHandle = -12;
+    private const uint GenericReadWrite = 0x80000000 | 0x40000000;
+    private const uint FileShareReadWrite = 0x00000001 | 0x00000002;
+    private const uint OpenExisting = 3;
 
     [System.Runtime.InteropServices.DllImport("kernel32.dll", SetLastError = true)]
     private static extern bool AttachConsole(int processId);
@@ -24,6 +29,19 @@ public static class Cli
     [System.Runtime.InteropServices.DllImport("user32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
     private static extern int MessageBoxW(IntPtr hWnd, string text, string caption, uint type);
 
+    [System.Runtime.InteropServices.DllImport("kernel32.dll", SetLastError = true, CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
+    private static extern IntPtr CreateFileW(
+        string fileName,
+        uint desiredAccess,
+        uint shareMode,
+        IntPtr securityAttributes,
+        uint creationDisposition,
+        uint flagsAndAttributes,
+        IntPtr templateFile);
+
+    [System.Runtime.InteropServices.DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool SetStdHandle(int stdHandleId, IntPtr handle);
+
     /// <summary>WinExe 没有自己的控制台，从命令行启动时挂到父进程的控制台上。</summary>
     public static void EnsureConsole()
     {
@@ -31,12 +49,35 @@ public static class Cli
         {
             if (Console.IsOutputRedirected) return;
             if (GetConsoleWindow() != IntPtr.Zero) return;
-            AttachConsole(AttachParentProcess);
+            if (!AttachConsole(AttachParentProcess)) return;
+
+            // AttachConsole 只把进程挂上父控制台，并不会更新本进程的标准句柄；
+            // GUI 进程启动时 GetStdHandle(STD_OUTPUT_HANDLE) 是 NULL，而 .NET 的
+            // Console.Out 在首次使用时才读这个句柄。必须手动指到 CONOUT$，
+            // 否则所有 Console 输出都会静默丢失（命令行里表现为"直接返回空"）。
+            RebindStdHandleToConsole(StdOutputHandle);
+            RebindStdHandleToConsole(StdErrorHandle);
         }
         catch
         {
             // 没有控制台也无所谓，仍然可以用 --out 输出到文件
         }
+    }
+
+    private static void RebindStdHandleToConsole(int stdHandleId)
+    {
+        var handle = CreateFileW(
+            "CONOUT$",
+            GenericReadWrite,
+            FileShareReadWrite,
+            IntPtr.Zero,
+            OpenExisting,
+            0,
+            IntPtr.Zero);
+
+        if (handle == IntPtr.Zero || handle == new IntPtr(-1)) return;
+
+        SetStdHandle(stdHandleId, handle);
     }
 
     private static void PrepareEncoding()

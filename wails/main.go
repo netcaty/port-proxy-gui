@@ -30,6 +30,11 @@ var assets embed.FS
 func main() {
 	opts := cli.Parse(os.Args[1:])
 
+	// CLI 只读模式：先挂父控制台（windowsgui 子系统默认不绑定 cmd 的控制台）
+	if opts.Help || opts.Dump || opts.Hints {
+		cli.AttachParentConsole()
+	}
+
 	if opts.Help {
 		fmt.Print(cli.HelpText)
 		return
