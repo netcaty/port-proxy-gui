@@ -150,13 +150,7 @@ public sealed class EntryDialog : Form
         _listenPort.TextChanged += (_, _) => UpdatePreview();
         AddRow(table, "监听地址", _listenAddress, control2: _listenPort);
 
-        // 目标候选（单一输入框：手输 IP 或选择探测到的地址/设备，可跟随的项可打开跟随开关）
-        _followToggle.Text = "跟随";
-        _followToggle.AutoSize = true;
-        _followToggle.Enabled = false;
-        _followToggle.Margin = new Padding(0, 7, 6, 0);
-        _followToggle.CheckedChanged += (_, _) => UpdatePreview();
-
+        // 目标候选（单一输入框：手输 IP 或选择探测到的地址/设备）
         _connectAddress.DropDownStyle = ComboBoxStyle.DropDown;
         _connectAddress.Text = "127.0.0.1";
         _connectAddress.Anchor = AnchorStyles.Left | AnchorStyles.Right;
@@ -180,36 +174,17 @@ public sealed class EntryDialog : Form
         _connectPort.Width = 96;
         _connectPort.ValueChanged += (_, _) => UpdatePreview();
         _connectPort.TextChanged += (_, _) => UpdatePreview();
+        AddRow(table, "目标候选", _connectAddress, control2: _connectPort);
 
-        var modeFlow = new FlowLayoutPanel
-        {
-            FlowDirection = FlowDirection.LeftToRight,
-            WrapContents = false,
-            AutoSize = true,
-            AutoSizeMode = AutoSizeMode.GrowAndShrink,
-            Dock = DockStyle.Left,
-            Margin = new Padding(0),
-        };
-        modeFlow.Controls.Add(_followToggle);
+        // 跟随开关与连通性测试并排；悬停给出说明
+        _followToggle.Text = "跟随";
+        _followToggle.AutoSize = true;
+        _followToggle.Enabled = false;
+        _followToggle.Margin = new Padding(0, 0, 8, 0);
+        _followToggle.CheckedChanged += (_, _) => UpdatePreview();
+        _tip.SetToolTip(_followToggle,
+            "对 WSL / 虚拟机 / Windows 沙盒开启 IP 自动跟随；网关 / 局域网设备不支持。");
 
-        var targetLayout = new TableLayoutPanel
-        {
-            Dock = DockStyle.Fill,
-            ColumnCount = 2,
-            AutoSize = true,
-            Margin = new Padding(0),
-        };
-        targetLayout.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-        targetLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        targetLayout.Controls.Add(modeFlow, 0, 0);
-        _connectAddress.Margin = new Padding(8, 3, 0, 3);
-        targetLayout.Controls.Add(_connectAddress, 1, 0);
-
-        var targetPanel = new Panel { Anchor = AnchorStyles.Left | AnchorStyles.Right, Height = 30 };
-        targetPanel.Controls.Add(targetLayout);
-        AddRow(table, "目标候选", targetPanel, control2: _connectPort);
-
-        // 连通性测试
         var testButton = new Button
         {
             Text = "测试目标连通性",
@@ -218,14 +193,17 @@ public sealed class EntryDialog : Form
             Dock = DockStyle.Left,
         };
         testButton.Click += async (_, _) => await TestConnectAsync();
+        _tip.SetToolTip(testButton, "按当前目标地址与端口测试 TCP 连通性。");
 
         _testResult.Dock = DockStyle.Fill;
         _testResult.TextAlign = ContentAlignment.MiddleLeft;
         _testResult.ForeColor = SystemColors.GrayText;
 
         var testPanel = new Panel { Anchor = AnchorStyles.Left | AnchorStyles.Right, Height = 30 };
-        testPanel.Controls.Add(_testResult);
+        testPanel.Controls.Add(_followToggle);
         testPanel.Controls.Add(testButton);
+        testPanel.Controls.Add(_testResult);
+        testPanel.MouseHover += (_, _) => ShowFollowTipHint();
         AddRow(table, string.Empty, testPanel, span: true);
 
         // 名称 / 分组 / 备注
@@ -491,6 +469,24 @@ public sealed class EntryDialog : Form
 
         _followToggle.Enabled = followable;
         if (!followable) _followToggle.Checked = false;
+    }
+
+    /// <summary>
+    /// 跟随开关被禁用时（网关 / 局域网设备 / 手输 IP）不响应 ToolTip 组件，
+    /// 这里借面板的 MouseHover 在开关位置补一条悬停说明。
+    /// </summary>
+    private void ShowFollowTipHint()
+    {
+        if (_followToggle.Enabled || IsDisposed || !_followToggle.IsHandleCreated) return;
+
+        var parent = _followToggle.Parent;
+        if (parent is null) return;
+
+        if (!parent.RectangleToScreen(_followToggle.Bounds).Contains(Cursor.Position)) return;
+
+        _tip.Show(
+            "仅 WSL / 虚拟机 / Windows 沙盒可开启跟随；当前选中项不支持。",
+            _followToggle, 0, _followToggle.Height + 4, 2500);
     }
 
     /// <summary>用户在下拉里提交了某个候选：手动填写项清空文本，其余保留展示文本。</summary>
