@@ -15,6 +15,7 @@ import (
 	"github.com/wailsapp/wails/v3/pkg/application"
 	"github.com/wailsapp/wails/v3/pkg/events"
 
+	"portproxymanager/internal/appicon"
 	"portproxymanager/internal/autorun"
 	"portproxymanager/internal/cli"
 	"portproxymanager/internal/elevation"
@@ -28,9 +29,6 @@ import (
 
 //go:embed all:frontend/dist
 var assets embed.FS
-
-//go:embed build/windows/icon.ico
-var trayIconData []byte
 
 // restartEnvName 托盘"重启"标记：新实例带此环境变量时等待旧实例
 // 释放互斥体后接管（避免激活正在退出的旧窗口导致程序悄悄消失）。
@@ -191,7 +189,7 @@ func main() {
 func setupSystemTray(app *application.App, win application.Window, svc *AppService,
 	settingsStore *settings.Store, pathsCtx *paths.Context) {
 	tray := app.SystemTray.New()
-	tray.SetIcon(trayIconData)
+	tray.SetIcon(appicon.TrayIconPNG())
 	tray.SetTooltip("PortProxyManager — netsh portproxy 管理器")
 
 	menu := application.NewMenu()
