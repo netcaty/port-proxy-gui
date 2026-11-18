@@ -32,11 +32,11 @@
             </MenuFlyout>
 
             <!-- 系统托盘图标：常驻，右键菜单（ContextFlyout），双击恢复窗口 -->
-            <!-- IconSource 用 ms-appx 绝对 URI：相对路径会被 H.NotifyIcon 按 XAML 文件位置（Views\）解析而找不到文件 -->
+            <!-- 图标在 MainWindow 构造函数里从嵌入的静态 PNG 设置，
+                 不走 XAML 的 ms-appx URI（H.NotifyIcon 对未打包应用的 ms-appx 解析会崩） -->
             <tb:TaskbarIcon
                 x:Name="TrayIcon"
                 ToolTipText="PortProxy 管理器"
-                IconSource="ms-appx:///Assets/AppIcon.ico"
                 DoubleClickCommand="{x:Bind ViewModel.TrayDoubleClickCommand}">
                 <tb:TaskbarIcon.ContextFlyout>
                     <MenuFlyout>
@@ -62,11 +62,7 @@
             <RowDefinition Height="*" />
         </Grid.RowDefinitions>
 
-        <TitleBar x:Name="AppTitleBar" Title="PortProxy 管理器">
-            <TitleBar.IconSource>
-                <ImageIconSource ImageSource="Assets/AppIcon.ico" />
-            </TitleBar.IconSource>
-        </TitleBar>
+        <TitleBar x:Name="AppTitleBar" Title="PortProxy 管理器" />
 
         <!-- 警告横幅：IP Helper 停止 / 映射未生效 / 数据目录降级 -->
         <InfoBar
@@ -207,76 +203,81 @@
                     </StackPanel>
                 </Grid>
 
-                <!-- 映射列表 -->
-                <controls:DataGrid
-                    x:Name="Grid"
-                    Grid.Row="1"
-                    Margin="12,6,12,6"
-                    AlternatingRowBackground="{ThemeResource SubtleFillColorSecondaryBrush}"
-                    AutoGenerateColumns="False"
-                    CanUserReorderColumns="False"
-                    CanUserResizeColumns="True"
-                    CanUserSortColumns="True"
-                    HeadersVisibility="Column"
-                    IsReadOnly="True"
-                    ItemsSource="{x:Bind ViewModel.View, Mode=OneWay}"
-                    RowDetailsVisibilityMode="Collapsed"
-                    SelectedItem="{x:Bind ViewModel.SelectedRow, Mode=TwoWay}"
-                    SelectionMode="Single"
-                    Sorting="OnGridSorting">
-                    <controls:DataGrid.Columns>
-                        <controls:DataGridTextColumn
-                            Width="130"
-                            Binding="{Binding Name}"
-                            Header="名称"
-                            Tag="Name" />
-                        <controls:DataGridTextColumn
-                            Width="80"
-                            Binding="{Binding Group}"
-                            Header="分组"
-                            Tag="Group" />
-                        <controls:DataGridTextColumn
-                            Width="75"
-                            Binding="{Binding Type}"
-                            Header="类型"
-                            Tag="Type" />
-                        <controls:DataGridTextColumn
-                            Width="108"
-                            Binding="{Binding ListenAddress}"
-                            Header="监听地址"
-                            Tag="ListenAddress" />
-                        <controls:DataGridTextColumn
-                            Width="76"
-                            Binding="{Binding ListenPort}"
-                            Header="监听端口"
-                            Tag="ListenPort" />
-                        <controls:DataGridTextColumn
-                            Width="108"
-                            Binding="{Binding ConnectAddress}"
-                            Header="目标地址"
-                            Tag="ConnectAddress" />
-                        <controls:DataGridTextColumn
-                            Width="76"
-                            Binding="{Binding ConnectPort}"
-                            Header="目标端口"
-                            Tag="ConnectPort" />
-                        <controls:DataGridTextColumn
-                            Width="96"
-                            Binding="{Binding Follow}"
-                            Header="跟随"
-                            Tag="Follow" />
-                        <controls:DataGridTextColumn
-                            Width="68"
-                            Binding="{Binding Firewall}"
-                            Header="防火墙"
-                            Tag="Firewall" />
-                        <controls:DataGridTextColumn
-                            Width="150"
-                            Binding="{Binding Note}"
-                            Header="备注"
-                            Tag="Note" />
-                    </controls:DataGrid.Columns>
-                </controls:DataGrid>
+                <!-- 映射列表；透明背景层接收空白处双击（DataGrid 空白区域不参与命中测试） -->
+                <Grid Grid.Row="1">
+                    <Grid
+                        x:Name="GridBlankArea"
+                        Background="Transparent"
+                        DoubleTapped="OnGridBlankAreaDoubleTapped" />
+                    <controls:DataGrid
+                        x:Name="Grid"
+                        Margin="12,6,12,6"
+                        AlternatingRowBackground="{ThemeResource SubtleFillColorSecondaryBrush}"
+                        AutoGenerateColumns="False"
+                        CanUserReorderColumns="False"
+                        CanUserResizeColumns="True"
+                        CanUserSortColumns="True"
+                        HeadersVisibility="Column"
+                        IsReadOnly="True"
+                        ItemsSource="{x:Bind ViewModel.View, Mode=OneWay}"
+                        RowDetailsVisibilityMode="Collapsed"
+                        SelectedItem="{x:Bind ViewModel.SelectedRow, Mode=TwoWay}"
+                        SelectionMode="Single"
+                        Sorting="OnGridSorting">
+                        <controls:DataGrid.Columns>
+                            <controls:DataGridTextColumn
+                                Width="130"
+                                Binding="{Binding Name}"
+                                Header="名称"
+                                Tag="Name" />
+                            <controls:DataGridTextColumn
+                                Width="80"
+                                Binding="{Binding Group}"
+                                Header="分组"
+                                Tag="Group" />
+                            <controls:DataGridTextColumn
+                                Width="75"
+                                Binding="{Binding Type}"
+                                Header="类型"
+                                Tag="Type" />
+                            <controls:DataGridTextColumn
+                                Width="108"
+                                Binding="{Binding ListenAddress}"
+                                Header="监听地址"
+                                Tag="ListenAddress" />
+                            <controls:DataGridTextColumn
+                                Width="76"
+                                Binding="{Binding ListenPort}"
+                                Header="监听端口"
+                                Tag="ListenPort" />
+                            <controls:DataGridTextColumn
+                                Width="108"
+                                Binding="{Binding ConnectAddress}"
+                                Header="目标地址"
+                                Tag="ConnectAddress" />
+                            <controls:DataGridTextColumn
+                                Width="76"
+                                Binding="{Binding ConnectPort}"
+                                Header="目标端口"
+                                Tag="ConnectPort" />
+                            <controls:DataGridTextColumn
+                                Width="96"
+                                Binding="{Binding Follow}"
+                                Header="跟随"
+                                Tag="Follow" />
+                            <controls:DataGridTextColumn
+                                Width="68"
+                                Binding="{Binding Firewall}"
+                                Header="防火墙"
+                                Tag="Firewall" />
+                            <controls:DataGridTextColumn
+                                Width="150"
+                                Binding="{Binding Note}"
+                                Header="备注"
+                                Tag="Note" />
+                        </controls:DataGrid.Columns>
+                    </controls:DataGrid>
+                </Grid>
 
                 <!-- 状态栏 -->
                 <Grid
@@ -316,9 +317,10 @@
                 </Grid>
             </Grid>
 
-            <!-- 内嵌编辑页（新增/编辑）与日志页在代码里填充内容 -->
+            <!-- 内嵌编辑页（新增/编辑）、日志页、诊断页在代码里填充内容 -->
             <Grid x:Name="EditorHost" Visibility="Collapsed" />
             <Grid x:Name="LogHost" Visibility="Collapsed" />
+            <Grid x:Name="DiagnosticsHost" Visibility="Collapsed" />
         </Grid>
     </Grid>
 </Window>

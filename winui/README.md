@@ -13,11 +13,13 @@
 
 > 托盘用 [H.NotifyIcon.WinUI](https://github.com/HavenDV/H.NotifyIcon)（命令模式：`DoubleClickCommand`；菜单走 `ContextFlyout`）。
 >
-> 新增/编辑映射和操作日志不再单独开窗：改为在主窗口内切换页面显示，点左上角返回或按 Esc 回到列表。
+> 新增/编辑映射、操作日志和诊断页不再单独开窗：改为在主窗口内切换页面显示，点左上角返回或按 Esc 回到列表。表格空白处双击可直接进入新增页。
+>
+> 图标复用 Wails 项目的静态资源（已复制到本项目 `Assets`，不依赖 Wails 目录）：exe/窗口图标用 `Assets/AppIcon.ico`，托盘图标用 `Assets/TrayIcon.png`（嵌入程序集，运行时不依赖外部文件）。
 
 ## 构建
 
-依赖：.NET SDK（≥11）、[winapp CLI](https://github.com/microsoft/winappCli)（可选，用于运行调试与 UI 自动化验证）。
+依赖：.NET SDK（≥11；当前目标框架 `net11.0-windows10.0.26100.0`）、[winapp CLI](https://github.com/microsoft/winappCli)（可选，用于运行调试与 UI 自动化验证）。
 
 ```bat
 :: 开发调试运行（自动构建 + 启动）
@@ -30,6 +32,8 @@ dotnet publish PortProxyManager.WinUI\PortProxyManager.WinUI.csproj -c Release -
 > **为什么不发单文件**：业务层用 `AppContext.BaseDirectory` 锚定"数据跟 exe"的便携目录，
 > 而 .NET 单文件的 BaseDirectory 指向 Temp 提取目录（随机 hash），会破坏该语义，
 > 故目录形态是本版的主发布形态。
+
+> **目标框架降级（实测结论）**：`net10.0-windows10.0.26100.0` 用 11.0.100 SDK 实测，只需改 `TargetFramework`，包与代码零改动；`net9.0` 需把 `H.NotifyIcon.WinUI` 降到 2.3.2，且若用 .NET 9 SDK（C# 13）编译，还需把 31 处 `[ObservableProperty] partial` 改成字段式（`CommunityToolkit.Mvvm` 8.4.2 的源生成器要求 C# 14）。`net8.0`/`net9.0` 均已 EOL，不建议。降级时保留 `windows10.0.26100.0` 平台版本——WinAppSDK 2.7 要求 `Microsoft.Windows.SDK.NET.Ref >= 10.0.26100.38`。
 
 ## 形态
 

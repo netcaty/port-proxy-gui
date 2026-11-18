@@ -606,8 +606,8 @@ public partial class MainViewModel : ObservableObject
     [RelayCommand]
     private void ShowLog()
     {
-        // 编辑页打开时不切走，避免丢失未保存的表单内容
-        if (Editor is not null) return;
+        // 编辑页/诊断页打开时不切走，避免丢失未保存的表单内容或打断诊断循环
+        if (Editor is not null || _diagnosticVm is not null) return;
 
         var dir = LogService.Current?.Dir ?? AppRuntime.Paths.LogDir;
         LogRequested?.Invoke(dir);
@@ -671,7 +671,7 @@ public partial class MainViewModel : ObservableObject
     [RelayCommand]
     private async Task AddEntryAsync()
     {
-        if (Editor is not null) return;
+        if (Editor is not null || _diagnosticVm is not null) return;
         if (!await RequireElevationAsync()) return;
 
         _editingRow = null;
@@ -682,7 +682,7 @@ public partial class MainViewModel : ObservableObject
     {
         row ??= SelectedRow;
         if (row is null) return;
-        if (Editor is not null) return;
+        if (Editor is not null || _diagnosticVm is not null) return;
         if (!await RequireElevationAsync()) return;
 
         _editingRow = row;
@@ -924,15 +924,24 @@ public partial class MainViewModel : ObservableObject
 
     // ---------------------------------------------------------------- 诊断
 
+    /// <summary>当前打开的内嵌诊断页；null = 未打开。</summary>
+    private DiagnosticsViewModel? _diagnosticVm;
+
+    /// <summary>请求主窗口显示诊断页。</summary>
+    public event Action<DiagnosticsViewModel>? DiagnosticsRequested;
+
+    /// <summary>请求主窗口收起诊断页。</summary>
+    public event Action? DiagnosticsDismissed;
+
     /// <summary>
-    /// 诊断循环：打开诊断窗口 → 用户点修复 → 执行 → 延迟复查 → 重开窗口。
-    /// 与旧版 DiagnoseEntry 的 while 循环一致。
+    /// 诊断循环：打开内嵌诊断页 → 用户点修复 → 执行 → 延迟复查 → 重新打开。
+    /// 与旧版 DiagnoseEntry 的 while 循环一致，只是不再单独开窗。
     /// </summary>
     [RelayCommand]
     private async Task DiagnoseSelectedAsync(EntryRowViewModel? row = null)
     {
         row ??= SelectedRow;
-        if (row is null) return;
+        if (row is null || _diagnosticVm is not null || Editor is not null) return;
 
         var entry = row.Entry;
         var meta = AppRuntime.Meta.Get(entry.Key) ?? row.Meta;
@@ -941,13 +950,16 @@ public partial class MainViewModel : ObservableObject
         {
             while (true)
             {
-                var action = await DiagnosticsWindow.ShowAsync(entry, meta, AppRuntime.Elevated);
+                var action = await ShowDiagnosticsAsync(entry, meta);
                 if (action == DiagnosticAction.None) return;
 
                 var ok = await PerformDiagnosticActionAsync(action, entry);
 
                 // 服务重启 / 端口重建需要一点时间才能看到监听器
                 if (ok) await Task.Delay(ProbeTimeouts.StatusRefreshDelayMs);
+
+                // Task.Delay / 服务层续体可能落在后台线程，刷新前先切回 UI
+                await EnsureUiThreadAsync();
 
                 RefreshData();
                 meta = AppRuntime.Meta.Get(entry.Key) ?? meta;
@@ -962,7 +974,41 @@ public partial class MainViewModel : ObservableObject
         }
     }
 
-    /// <summary>执行诊断窗口返回的修复动作。返回是否成功。</summary>
+    /// <summary>
+    /// 显示内嵌诊断页并等待用户选择修复动作或关闭。
+    /// 返回 DiagnosticAction.None 表示用户关闭了页面。
+    /// </summary>
+    private Task<DiagnosticAction> ShowDiagnosticsAsync(PortProxyEntry entry, EntryMeta? meta)
+    {
+        var vm = new DiagnosticsViewModel(entry, meta, AppRuntime.Elevated);
+        var tcs = new TaskCompletionSource<DiagnosticAction>();
+
+        vm.CloseRequested += () =>
+        {
+            _diagnosticVm = null;
+            DiagnosticsDismissed?.Invoke();
+            tcs.TrySetResult(vm.ReportedAction);
+        };
+
+        _diagnosticVm = vm;
+        DiagnosticsRequested?.Invoke(vm);
+
+        return tcs.Task;
+    }
+
+    /// <summary>确保后续 UI 操作在 UI 线程执行（已在 UI 线程则直接完成）。</summary>
+    private static Task EnsureUiThreadAsync()
+    {
+        var queue = AppRuntime.UiQueue;
+        if (queue is null || queue.HasThreadAccess) return Task.CompletedTask;
+
+        var tcs = new TaskCompletionSource();
+        if (!queue.TryEnqueue(() => tcs.TrySetResult()))
+            tcs.TrySetResult();
+        return tcs.Task;
+    }
+
+    /// <summary>执行诊断页返回的修复动作。返回是否成功。</summary>
     private async Task<bool> PerformDiagnosticActionAsync(DiagnosticAction action, PortProxyEntry entry)
     {
         switch (action)

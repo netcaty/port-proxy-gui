@@ -56,7 +56,7 @@ public partial class DiagnosticsViewModel : ObservableObject
     private bool _running;
     private DiagnosticReport? _report;
 
-    /// <summary>用户点了修复按钮：动作交回主窗口执行（窗口随后关闭）。</summary>
+    /// <summary>用户点了修复按钮：动作交回主窗口执行（诊断页随后关闭）。</summary>
     public DiagnosticAction ReportedAction { get; private set; } = DiagnosticAction.None;
 
     public string Title => "诊断转发链路";
@@ -163,6 +163,8 @@ public partial class DiagnosticsViewModel : ObservableObject
 
     private void RenderReport(DiagnosticReport report)
     {
+        OnPropertyChanged(nameof(HasReport));
+
         SummaryText =
             $"通过 {report.PassCount}，警告 {report.WarnCount}，失败 {report.FailCount}，跳过 {report.SkipCount}" +
             (_elevated ? string.Empty : "。部分修复需要管理员权限。");
@@ -205,8 +207,13 @@ public partial class DiagnosticsViewModel : ObservableObject
         CloseRequested?.Invoke();
     }
 
-    /// <summary>用户直接关闭窗口：无修复动作。</summary>
-    public void ReportNone() => ReportedAction = DiagnosticAction.None;
+    /// <summary>用户直接关闭诊断页：无修复动作，返回列表。</summary>
+    [RelayCommand]
+    private void Close()
+    {
+        ReportedAction = DiagnosticAction.None;
+        CloseRequested?.Invoke();
+    }
 
     [RelayCommand]
     private void CopyReport()

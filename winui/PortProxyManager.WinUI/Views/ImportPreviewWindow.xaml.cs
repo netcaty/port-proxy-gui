@@ -18,7 +18,7 @@ public sealed partial class ImportPreviewWindow : Window
         ViewModel = new ImportPreviewViewModel(diff);
         Root.DataContext = ViewModel;
 
-        AppWindow.SetIcon("Assets/AppIcon.ico");
+        AppWindow.SetIcon(AppRuntime.WindowIconPath);
 
         ViewModel.CloseRequested += () => Close();
 

@@ -22,6 +22,14 @@ public static class AppRuntime
 
     public static MainWindow? MainWindow { get; set; }
 
+    /// <summary>
+    /// 运行时窗口图标路径。图标是链接自 Wails 项目的静态 ICO，
+    /// 构建时复制到输出目录的 Assets\ 下；用绝对路径避免计划任务启动时
+    /// 工作目录不是 exe 目录导致 SetIcon 找不到文件。
+    /// </summary>
+    public static string WindowIconPath { get; } =
+        Path.Combine(AppContext.BaseDirectory, "Assets", "AppIcon.ico");
+
     public static void Initialize(
         PathContext paths, MetaStore meta, SettingsStore settings,
         bool elevated, bool startInTray)

@@ -1,12 +1,11 @@
 <?xml version="1.0" encoding="utf-8" ?>
-<Window
-    x:Class="PortProxyManager.WinUI.Views.DiagnosticsWindow"
+<UserControl
+    x:Class="PortProxyManager.WinUI.Views.DiagnosticsView"
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
     xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
     xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
     xmlns:vm="using:PortProxyManager.WinUI.ViewModels"
-    Title="诊断转发链路"
     mc:Ignorable="d">
 
     <Grid x:Name="Root" RowSpacing="0">
@@ -17,12 +16,40 @@
             <RowDefinition Height="Auto" />
         </Grid.RowDefinitions>
 
-        <!-- 头部：映射标识 + 汇总 -->
-        <StackPanel Grid.Row="0" Margin="16,12,16,4" Spacing="4">
+        <!-- 页头：返回列表 -->
+        <Grid
+            Grid.Row="0"
+            Padding="12,8,16,4"
+            ColumnSpacing="8">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="*" />
+            </Grid.ColumnDefinitions>
+            <Button
+                Grid.Column="0"
+                Command="{x:Bind ViewModel.CloseCommand}"
+                ToolTipService.ToolTip="返回列表 (Esc)">
+                <Button.KeyboardAccelerators>
+                    <KeyboardAccelerator Key="Escape" />
+                </Button.KeyboardAccelerators>
+                <FontIcon FontSize="16" Glyph="&#xE72B;" />
+            </Button>
             <TextBlock
+                Grid.Column="1"
+                VerticalAlignment="Center"
+                Style="{StaticResource SubtitleTextBlockStyle}"
+                Text="诊断转发链路" />
+        </Grid>
+
+        <!-- 映射标识 + 汇总 -->
+        <StackPanel
+            Grid.Row="1"
+            Margin="16,0,16,4"
+            Spacing="4">
+            <TextBlock
+                Style="{StaticResource BodyStrongTextBlockStyle}"
                 Text="{x:Bind ViewModel.HeaderText, Mode=OneWay}"
-                TextTrimming="CharacterEllipsis"
-                Style="{StaticResource BodyStrongTextBlockStyle}" />
+                TextTrimming="CharacterEllipsis" />
             <TextBlock
                 Foreground="{x:Bind ViewModel.SummaryBrush, Mode=OneWay}"
                 Text="{x:Bind ViewModel.SummaryText, Mode=OneWay}"
@@ -109,8 +136,11 @@
                     Command="{x:Bind ViewModel.RunDiagnosticsCommand}"
                     Content="重新诊断"
                     IsEnabled="{x:Bind ViewModel.NotRunning, Mode=OneWay}" />
-                <Button Content="关闭" MinWidth="88" Click="OnCloseClicked" />
+                <Button
+                    Command="{x:Bind ViewModel.CloseCommand}"
+                    Content="关闭"
+                    MinWidth="88" />
             </StackPanel>
         </Grid>
     </Grid>
-</Window>
+</UserControl>

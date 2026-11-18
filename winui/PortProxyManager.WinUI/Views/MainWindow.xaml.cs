@@ -3,11 +3,15 @@ using System.Runtime.InteropServices;
 using CommunityToolkit.WinUI.UI.Controls;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Windowing;
+using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Controls.Primitives;
 using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media;
+using Microsoft.UI.Xaml.Media.Imaging;
+using PortProxyManager.Services;
 using PortProxyManager.WinUI.ViewModels;
 using Windows.Graphics;
+using Windows.Storage.Streams;
 
 namespace PortProxyManager.WinUI.Views;
 
@@ -23,12 +27,16 @@ public sealed partial class MainWindow : Window
     [DllImport("user32.dll")]
     private static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
 
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern bool DestroyIcon(IntPtr hIcon);
+
     private const int SwRestore = 9;
 
     public MainViewModel ViewModel { get; } = new();
 
     private bool _forceExit;
     private bool _trayTipShown;
+    private InMemoryRandomAccessStream? _titleBarIconStream;
 
     public MainWindow()
     {
@@ -37,20 +45,24 @@ public sealed partial class MainWindow : Window
         Title = "PortProxy 管理器";
         ExtendsContentIntoTitleBar = true;
         SetTitleBar(AppTitleBar);
-        AppWindow.SetIcon("Assets/AppIcon.ico");
+        AppWindow.SetIcon(AppRuntime.WindowIconPath);
+        LoadTrayIcon();
 
         Grid.DataContext = ViewModel;
 
-        Grid.DoubleTapped += OnGridDoubleTapped;
+        Grid.AddHandler(
+            UIElement.DoubleTappedEvent,
+            new DoubleTappedEventHandler(OnGridDoubleTapped),
+            handledEventsToo: true);
         Grid.RightTapped += OnGridRightTapped;
         Grid.KeyDown += OnGridKeyDown;
 
-        // 新增/编辑与日志都改为窗口内页面，由 ViewModel 发出显示/隐藏请求
+        // 新增/编辑、日志、诊断都改为窗口内页面，由 ViewModel 发出显示/隐藏请求
         ViewModel.EditorRequested += ShowEditor;
         ViewModel.EditorDismissed += HideEditor;
         ViewModel.LogRequested += ShowLogViewer;
-
-        AppWindow.SetIcon("Assets/AppIcon.ico");
+        ViewModel.DiagnosticsRequested += ShowDiagnostics;
+        ViewModel.DiagnosticsDismissed += HideDiagnostics;
 
         // 关闭进托盘：真退出时放行（托盘"退出"/提权重启走 ForceExit）
         AppWindow.Closing += (s, e) =>
@@ -87,7 +99,75 @@ public sealed partial class MainWindow : Window
             PersistWindowState();
             PersistColumnWidths();
             ViewModel.Dispose();
+            _titleBarIconStream?.Dispose();
         };
+    }
+
+    /// <summary>
+    /// 托盘图标使用嵌入程序集的静态 PNG（与 Wails 的 go:embed 一致），
+    /// 不依赖输出目录里的资源文件。
+    /// H.NotifyIcon 的 IconSource 在未打包应用里解析 URI 会抛 NRE，
+    /// 这里直接把 PNG 转成 HICON 赋给 Icon 属性。
+    /// </summary>
+    private void LoadTrayIcon()
+    {
+        try
+        {
+            using var stream = typeof(MainWindow).Assembly.GetManifestResourceStream(
+                "PortProxyManager.WinUI.Assets.TrayIcon.png");
+            if (stream is null) return;
+
+            var bytes = new byte[stream.Length];
+            stream.ReadExactly(bytes);
+
+            using (var bitmap = new System.Drawing.Bitmap(new MemoryStream(bytes)))
+            {
+                var hIcon = bitmap.GetHicon();
+                try
+                {
+                    using var icon = System.Drawing.Icon.FromHandle(hIcon);
+                    TrayIcon.Icon = (System.Drawing.Icon)icon.Clone();
+                }
+                finally
+                {
+                    DestroyIcon(hIcon);
+                }
+            }
+
+            _ = SetTitleBarIconAsync(bytes);
+        }
+        catch (Exception ex)
+        {
+            LogService.Current?.Warn($"加载托盘图标失败：{ex.Message}");
+        }
+    }
+
+    /// <summary>标题栏图标复用托盘用的静态 PNG（ICO 里的 PNG 帧 WIC 解不出来）。</summary>
+    private async Task SetTitleBarIconAsync(byte[] bytes)
+    {
+        try
+        {
+            var ras = new InMemoryRandomAccessStream();
+            using (var writer = new DataWriter(ras))
+            {
+                writer.WriteBytes(bytes);
+                await writer.StoreAsync();
+                await writer.FlushAsync();
+                writer.DetachStream();
+            }
+
+            ras.Seek(0);
+
+            var image = new BitmapImage();
+            await image.SetSourceAsync(ras);
+
+            AppTitleBar.IconSource = new ImageIconSource { ImageSource = image };
+            _titleBarIconStream = ras;
+        }
+        catch (Exception ex)
+        {
+            LogService.Current?.Warn($"加载标题栏图标失败：{ex.Message}");
+        }
     }
 
     // ---------------------------------------------------------------- 窗口位置与尺寸
@@ -229,6 +309,12 @@ public sealed partial class MainWindow : Window
         }
     }
 
+    /// <summary>表格空白处双击：进入新增页。</summary>
+    private void OnGridBlankAreaDoubleTapped(object sender, DoubleTappedRoutedEventArgs e)
+    {
+        _ = ViewModel.AddEntryCommand.ExecuteAsync(null);
+    }
+
     /// <summary>右键：选中命中的行并弹出上下文菜单。</summary>
     private void OnGridRightTapped(object sender, RightTappedRoutedEventArgs e)
     {
@@ -272,6 +358,7 @@ public sealed partial class MainWindow : Window
     private void ShowEditor(EntryEditViewModel viewModel)
     {
         HideLogViewer();
+        HideDiagnostics();
 
         var view = new EntryEditView(viewModel);
         EditorHost.Children.Clear();
@@ -296,6 +383,7 @@ public sealed partial class MainWindow : Window
         if (LogHost.Visibility == Visibility.Visible) return;
 
         HideEditor();
+        HideDiagnostics();
 
         var view = new LogViewerView(logDir);
         view.CloseRequested += (_, _) => HideLogViewer();
@@ -313,6 +401,29 @@ public sealed partial class MainWindow : Window
 
         LogHost.Visibility = Visibility.Collapsed;
         LogHost.Children.Clear();
+        ListPage.Visibility = Visibility.Visible;
+    }
+
+    /// <summary>显示诊断页（不再单独开窗）。</summary>
+    private void ShowDiagnostics(DiagnosticsViewModel viewModel)
+    {
+        HideEditor();
+        HideLogViewer();
+
+        var view = new DiagnosticsView(viewModel);
+        DiagnosticsHost.Children.Clear();
+        DiagnosticsHost.Children.Add(view);
+
+        ListPage.Visibility = Visibility.Collapsed;
+        DiagnosticsHost.Visibility = Visibility.Visible;
+    }
+
+    private void HideDiagnostics()
+    {
+        if (DiagnosticsHost.Visibility != Visibility.Visible) return;
+
+        DiagnosticsHost.Visibility = Visibility.Collapsed;
+        DiagnosticsHost.Children.Clear();
         ListPage.Visibility = Visibility.Visible;
     }
 

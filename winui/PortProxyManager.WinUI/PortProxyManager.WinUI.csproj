@@ -5,6 +5,7 @@
     <TargetPlatformMinVersion>10.0.17763.0</TargetPlatformMinVersion>
     <RootNamespace>PortProxyManager.WinUI</RootNamespace>
     <ApplicationManifest>app.manifest</ApplicationManifest>
+    <!-- exe 资源图标：Wails 项目静态 ICO 的本地副本 -->
     <ApplicationIcon Condition="Exists('Assets\AppIcon.ico')">Assets\AppIcon.ico</ApplicationIcon>
     <Platforms>x86;x64;ARM64</Platforms>
     <RuntimeIdentifier Condition="'$(RuntimeIdentifier)' == ''">win-$([System.Runtime.InteropServices.RuntimeInformation]::ProcessArchitecture.ToString().ToLowerInvariant())</RuntimeIdentifier>
@@ -34,7 +35,14 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <Content Include="Assets\AppIcon.ico" CopyToPublishDirectory="PreserveNewest" />
+    <!-- 静态图标（从 Wails 项目复制到本项目 Assets，构建不依赖 Wails 目录）：
+         exe/窗口图标用 ICO（复制到输出目录供 AppWindow.SetIcon 读取），
+         托盘图标用 64×64 PNG（嵌入程序集，与 Wails 的 go:embed 一致）。 -->
+    <Content Include="Assets\AppIcon.ico"
+             CopyToOutputDirectory="PreserveNewest"
+             CopyToPublishDirectory="PreserveNewest" />
+    <EmbeddedResource Include="Assets\TrayIcon.png"
+                      LogicalName="PortProxyManager.WinUI.Assets.TrayIcon.png" />
     <Manifest Include="$(ApplicationManifest)" />
   </ItemGroup>
 

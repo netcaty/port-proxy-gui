@@ -18,7 +18,8 @@
 - WinUI：`winapp run PortProxyManager.WinUI\PortProxyManager.WinUI.csproj`；发布 `dotnet publish ... -c Release -r win-x64 --self-contained true -o dist`（**目录形态**，理由见下）。
 - Wails：`wails3 dev` / `wails3 build` / `wails3 task build:cli`。`--dump`/`--hints` 必须用 `portproxymanager-cli.exe`（主程序是 GUI 子系统，交互式 cmd 不等待它）。
 - 验证手段：`--dump [--json]`、`--hints`、`--selftest`（仅 C# 版，Go 版未移植）。
-- **工具链现状：本机只装了 .NET 8/9 SDK，但 WinUI 目标框架是 `net11.0-windows`**——本地直接 build WinUI 会失败，需先装 .NET 11 SDK；根目录工程用 .NET 9 正常。Go 1.27.1 已装。
+- **工具链现状：WinUI 目标框架是 `net11.0-windows10.0.26100.0`，需要 .NET SDK ≥11**；当前环境实测可用的是 scoop 安装的 .NET 11.0.100（`dotnet` 不在 PATH，需用完整路径调用）。根目录工程目标 .NET 9。Go 1.27.1 已装。
+- **WinUI 目标框架降级结论（实测）**：`net10.0-windows10.0.26100.0` 用 11.0.100 SDK 实测，只需改 `TargetFramework`，包与代码零改动；`net9.0` 需把 `H.NotifyIcon.WinUI` 从 2.4.1 降到 2.3.2，且若用 .NET 9 SDK（C# 13）编译，`CommunityToolkit.Mvvm` 8.4.2 的 partial property 源生成器不工作，31 处 `[ObservableProperty] partial` 要改成字段式；`net8.0`/`net9.0` 均已 EOL，不建议。降级时保留 `windows10.0.26100.0` 平台版本——WinAppSDK 2.7 要求 `Microsoft.Windows.SDK.NET.Ref >= 10.0.26100.38`。
 
 ## 架构边界（改动前务必遵守）
 
