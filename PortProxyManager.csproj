@@ -19,6 +19,17 @@
     <NeutralLanguage>zh-Hans</NeutralLanguage>
   </PropertyGroup>
 
+  <ItemGroup>
+    <!-- winui / wails 是并行工程，各有自己的构建系统；
+         SDK 默认通配（**/*.cs）会把它们连同 obj/ 里的生成文件卷进本工程编译 -->
+    <Compile Remove="winui\**" />
+    <Compile Remove="wails\**" />
+    <None Remove="winui\**" />
+    <None Remove="wails\**" />
+    <EmbeddedResource Remove="winui\**" />
+    <EmbeddedResource Remove="wails\**" />
+  </ItemGroup>
+
   <PropertyGroup Condition="'$(Configuration)' == 'Release'">
     <Optimize>true</Optimize>
     <PublishSingleFile>true</PublishSingleFile>
