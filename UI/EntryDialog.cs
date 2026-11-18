@@ -180,7 +180,7 @@ public sealed class EntryDialog : Form
         _followToggle.Text = "跟随";
         _followToggle.AutoSize = true;
         _followToggle.Enabled = false;
-        _followToggle.Margin = new Padding(0, 0, 8, 0);
+        _followToggle.Margin = new Padding(0, 6, 8, 3);
         _followToggle.CheckedChanged += (_, _) => UpdatePreview();
         _tip.SetToolTip(_followToggle,
             "对 WSL / 虚拟机 / Windows 沙盒开启 IP 自动跟随；网关 / 局域网设备不支持。");
@@ -190,7 +190,7 @@ public sealed class EntryDialog : Form
             Text = "测试目标连通性",
             AutoSize = true,
             FlatStyle = FlatStyle.System,
-            Dock = DockStyle.Left,
+            Margin = new Padding(0, 3, 8, 3),
         };
         testButton.Click += async (_, _) => await TestConnectAsync();
         _tip.SetToolTip(testButton, "按当前目标地址与端口测试 TCP 连通性。");
@@ -199,11 +199,28 @@ public sealed class EntryDialog : Form
         _testResult.TextAlign = ContentAlignment.MiddleLeft;
         _testResult.ForeColor = SystemColors.GrayText;
 
-        var testPanel = new Panel { Anchor = AnchorStyles.Left | AnchorStyles.Right, Height = 30 };
-        testPanel.Controls.Add(_followToggle);
-        testPanel.Controls.Add(testButton);
+        // 用 FlowLayoutPanel 明确排列开关与按钮，避免 Dock 叠加顺序导致控件重叠
+        var testActions = new FlowLayoutPanel
+        {
+            FlowDirection = FlowDirection.LeftToRight,
+            WrapContents = false,
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            Dock = DockStyle.Left,
+            Margin = new Padding(0),
+        };
+        testActions.Controls.Add(_followToggle);
+        testActions.Controls.Add(testButton);
+
+        var testPanel = new Panel
+        {
+            Anchor = AnchorStyles.Left | AnchorStyles.Right,
+            Height = 36,
+            Padding = new Padding(0, 0, 8, 0),
+        };
+        testPanel.Controls.Add(testActions);
         testPanel.Controls.Add(_testResult);
-        testPanel.MouseHover += (_, _) => ShowFollowTipHint();
+        testActions.MouseHover += (_, _) => ShowFollowTipHint();
         AddRow(table, string.Empty, testPanel, span: true);
 
         // 名称 / 分组 / 备注
