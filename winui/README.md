@@ -25,6 +25,9 @@
 :: 开发调试运行（自动构建 + 启动）
 winapp run PortProxyManager.WinUI\PortProxyManager.WinUI.csproj
 
+:: 用临时数据目录启动（settings/meta/logs 写到 %TEMP%\PortProxyManager.WinUI，不碰便携数据目录）
+run-tempdata.bat
+
 :: 发布绿色目录形态（exe + 自包含运行时，无需安装 .NET / Windows App Runtime）
 dotnet publish PortProxyManager.WinUI\PortProxyManager.WinUI.csproj -c Release -r win-x64 --self-contained true -o dist
 ```
