@@ -3,15 +3,17 @@
 // 地址端口表单 + 实时 netsh 预览 + 服务端校验 + 目标候选下拉（含 WSL / 沙盒 / 虚拟机跟随）。
 import { computed, onMounted, ref, watch } from 'vue'
 import * as AppService from '../../bindings/portproxymanager/appservice'
-import type { EntryRow } from '../../bindings/portproxymanager/models'
+import type { EntryRow, EnvInfo } from '../../bindings/portproxymanager/models'
 
 const props = defineProps<{ editing: EntryRow | null }>()
+const env = ref<EnvInfo | null>(null)
 const emit = defineEmits<{ (e: 'close'): void; (e: 'saved'): void }>()
 
 // 表单字段
 const name = ref(props.editing?.name ?? '')
 const group = ref(props.editing?.group ?? '')
 const note = ref(props.editing?.note ?? '')
+const addFirewall = ref(props.editing?.hasFirewallRule ?? false)
 const listenAddress = ref(props.editing?.listenAddress ?? '')
 const listenPort = ref(props.editing?.listenPort ?? 0)
 const connectAddress = ref(props.editing?.connectAddress ?? '')
@@ -102,6 +104,9 @@ function onCandidateChange() {
 
 onMounted(async () => {
   try {
+    env.value = (await AppService.GetEnv()) as EnvInfo
+  } catch { /* 提权状态不可用时复选框保持默认 */ }
+  try {
     candidates.value = (await AppService.ListCandidates(false)) as any[]
   } catch { candidates.value = [] }
   // 编辑时回显已保存的跟随目标
@@ -126,7 +131,8 @@ async function submit() {
       connectAddress: connectAddress.value.trim(),
       connectPort: Number(connectPort.value),
     }
-    const metaIn = { name: name.value || null, group: group.value || null, note: note.value || null }
+    const metaIn = { name: name.value || null, group: group.value || null, note: note.value || null,
+      addFirewallRule: addFirewall.value }
 
     const validation = await AppService.ValidateEntry(entry, props.editing?.key ?? '')
     if (!validation.ok && validation.error) {
@@ -192,6 +198,14 @@ async function submit() {
             <input v-model.number="connectPort" class="mono" type="number" min="1" max="65535" placeholder="1–65535" />
             <label>备注</label>
             <input v-model="note" placeholder="可选" />
+            <label></label>
+            <label style="display:flex; align-items:center; gap:6px; cursor:pointer"
+                   :title="env?.elevated ? '为监听端口创建入站放行规则（规则名由监听地址+端口生成）'
+                                       : '创建防火墙规则需要管理员权限'"
+                   :style="{ opacity: env?.elevated ? 1 : 0.5 }">
+              <input type="checkbox" v-model="addFirewall" style="width:auto" :disabled="!env?.elevated" />
+              同时创建入站放行规则（TCP）
+            </label>
           </div>
 
           <div v-if="followKind" class="form-warning" style="margin-top:6px">

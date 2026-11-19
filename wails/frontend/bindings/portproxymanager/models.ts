@@ -68,6 +68,12 @@ export interface MetaInput {
     "name": string | null;
     "group": string | null;
     "note": string | null;
+
+    /**
+     * AddFirewallRule 对话框"同时创建入站放行规则（TCP）"勾选。
+     * 只有校验过的监听端口进规则，规则名固定由监听地址+端口生成。
+     */
+    "addFirewallRule": boolean;
 }
 
 /**

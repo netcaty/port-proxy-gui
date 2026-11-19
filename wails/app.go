@@ -76,6 +76,9 @@ type MetaInput struct {
 	Name  *string `json:"name"`
 	Group *string `json:"group"`
 	Note  *string `json:"note"`
+	// AddFirewallRule 对话框"同时创建入站放行规则（TCP）"勾选。
+	// 只有校验过的监听端口进规则，规则名固定由监听地址+端口生成。
+	AddFirewallRule bool `json:"addFirewallRule"`
 }
 
 // MutationResult 写操作结果。
@@ -342,6 +345,16 @@ func (a *AppService) AddEntry(entry models.PortProxyEntry, metaIn MetaInput) Mut
 	a.meta.Set(created.Key(), *m)
 	_ = a.meta.Save()
 
+	// 防火墙联动（对照 C# MainForm 新增流程）：勾选时加规则，
+	// 加失败报"映射已创建，但防火墙规则添加失败"——映射保留，meta 标记
+	// 已存 true，诊断第 10 步会提示缺规则并给修复按钮。
+	if metaIn.AddFirewallRule {
+		if r := firewall.Add(created); !r.Ok {
+			a.emitEntriesChanged()
+			return MutationResult{Ok: false, Error: strPtrLocal("映射已创建，但防火墙规则添加失败：" + r.Message)}
+		}
+	}
+
 	a.emitEntriesChanged()
 	row := buildRow(created, a.meta.Get(created.Key()))
 	return MutationResult{Ok: true, Entry: &row}
@@ -374,9 +387,26 @@ func (a *AppService) UpdateEntry(oldEntry models.PortProxyEntry, newEntry models
 			m.CreatedAt = &now
 		}
 	}
+	// 防火墙联动（对照 C# MainForm 编辑流程）：
+	//   · 旧 meta 标记了规则 → 删旧条目的规则（规则名由旧监听地址+端口生成）
+	//   · 勾选 → 为新条目加规则（即使监听未变也幂等重建，保证勾选与实体一致）
+	oldMeta := a.meta.Get(oldEntry.Key())
 	a.meta.Remove(oldEntry.Key())
 	a.meta.Set(newEntry.Key(), *m)
 	_ = a.meta.Save()
+
+	if oldMeta != nil && oldMeta.HasFirewallRule {
+		r := firewall.Delete(oldEntry)
+		if log := logging.Current(); log != nil {
+			log.Info("编辑后清理旧防火墙规则：" + r.Message + "（" + mapOk(r.Ok) + "）")
+		}
+	}
+	if metaIn.AddFirewallRule {
+		if r := firewall.Add(newEntry); !r.Ok {
+			a.emitEntriesChanged()
+			return MutationResult{Ok: false, Error: strPtrLocal("映射已更新，但防火墙规则添加失败：" + r.Message)}
+		}
+	}
 
 	a.emitEntriesChanged()
 	row := buildRow(newEntry, a.meta.Get(newEntry.Key()))
@@ -620,7 +650,15 @@ func metaFromInput(in MetaInput) *models.EntryMeta {
 	if strings.TrimSpace(deref(in.Note)) != "" {
 		m.Note = in.Note
 	}
+	m.HasFirewallRule = in.AddFirewallRule
 	return m
+}
+
+func mapOk(ok bool) string {
+	if ok {
+		return "成功"
+	}
+	return "失败"
 }
 
 func deref(s *string) string {
