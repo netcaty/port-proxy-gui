@@ -51,6 +51,7 @@ portproxymanager-cli.exe --sync --json --out=%TEMP%\sync.json
 | ARP/网关候选 + 设备识别 | ✅ | arp.exe 解析、MAC OUI、Default Switch 锚点 |
 | 沙盒多 IP ICMP 去重 | ✅ | 600ms 并发 ping，全不可达时保留全部 |
 | 一键诊断（十步检查+修复） | ✅ | 注册表→格式→写法→归属→保留端口→iphelper→监听→连通→目标→防火墙 |
+| 目标连通性测试 | ✅ | 编辑对话框按钮 + 行右键菜单（对应 C# EntryDialog / MainForm） |
 | 防火墙联动 / IP Helper 启动重启 | ✅ | 规则名只由 IP:端口 生成 |
 | 导入导出 JSON（差异预览）/ 自动快照 | ✅ | 文档结构与 C# 版互通 |
 | 系统托盘 + 关窗进托盘 | ✅ | Wails v3 原生 tray，右键菜单含自启开关 |

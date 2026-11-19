@@ -296,6 +296,14 @@ export function SyncFollow(force: boolean): $CancellablePromise<follow$0.SyncRep
 }
 
 /**
+ * TestTarget 对目标地址:端口发起一次 TCP 连接测试。
+ * 只做网络探测，不写注册表、不拼 netsh 命令。
+ */
+export function TestTarget(connectAddress: string, port: number): $CancellablePromise<$models.TestTargetResult> {
+    return $Call.ByID(3645264907, connectAddress, port);
+}
+
+/**
  * UpdateEntry 编辑映射 = netsh 先删后加 + meta 键迁移。
  */
 export function UpdateEntry(oldEntry: models$0.PortProxyEntry, newEntry: models$0.PortProxyEntry, metaIn: $models.MetaInput): $CancellablePromise<$models.MutationResult> {

@@ -29,6 +29,7 @@ import (
 	"portproxymanager/internal/models"
 	"portproxymanager/internal/netsh"
 	"portproxymanager/internal/paths"
+	"portproxymanager/internal/probe"
 	"portproxymanager/internal/registryio"
 	"portproxymanager/internal/settings"
 	"portproxymanager/internal/syncguard"
@@ -317,6 +318,26 @@ func (a *AppService) syncFollowInternal(force bool) follow.SyncReport {
 func (a *AppService) ValidateEntry(entry models.PortProxyEntry, editingKey string) validator.Result {
 	existing, _ := registryio.ReadAll()
 	return validator.Validate(entry, existing, editingKey)
+}
+
+// TestTargetResult 目标连通性测试结果（对应 C# EntryDialog 的「测试目标连通性」）。
+type TestTargetResult struct {
+	Ok      bool   `json:"ok"`
+	Message string `json:"message"`
+}
+
+// TestTarget 对目标地址:端口发起一次 TCP 连接测试。
+// 只做网络探测，不写注册表、不拼 netsh 命令。
+func (a *AppService) TestTarget(connectAddress string, port int) TestTargetResult {
+	addr := strings.TrimSpace(connectAddress)
+	if addr == "" {
+		return TestTargetResult{Message: "请先填写目标地址。"}
+	}
+	if port < 1 || port > 65535 {
+		return TestTargetResult{Message: "目标端口必须在 1–65535 之间。"}
+	}
+	ok, detail := probe.TestConnect(addr, port, 2500*time.Millisecond)
+	return TestTargetResult{Ok: ok, Message: detail}
 }
 
 // PreviewNetsh 等价 netsh 命令预览。

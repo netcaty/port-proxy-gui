@@ -84,3 +84,11 @@ export interface MutationResult {
     "error": string | null;
     "entry": EntryRow | null;
 }
+
+/**
+ * TestTargetResult 目标连通性测试结果（对应 C# EntryDialog 的「测试目标连通性」）。
+ */
+export interface TestTargetResult {
+    "ok": boolean;
+    "message": string;
+}

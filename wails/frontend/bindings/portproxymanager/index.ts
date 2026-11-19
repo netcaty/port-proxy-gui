@@ -11,5 +11,6 @@ export type {
     EnvInfo,
     LogFile,
     MetaInput,
-    MutationResult
+    MutationResult,
+    TestTargetResult
 } from "./models.js";

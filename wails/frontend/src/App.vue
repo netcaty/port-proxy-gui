@@ -190,6 +190,17 @@ function openCtxMenu(ev: MouseEvent, row: EntryRow) {
   ctxVisible.value = true
 }
 
+async function probeTarget(row?: EntryRow) {
+  if (!row) return
+  try {
+    const r = await AppService.TestTarget(row.connectAddress, row.connectPort)
+    window.alert(`目标连通性：${row.name || row.listenText}\n` +
+      `${row.connectText}\n\n${r.ok ? '✔ 可达' : '✘ 不可达'}：${r.message}`)
+  } catch (e) {
+    window.alert('测试失败：' + String(e))
+  }
+}
+
 onMounted(async () => {
   await Promise.all([refresh(), loadEnv(), loadAutorun()])
   unlisten = Events.On('entries-changed', () => { void refresh() })
@@ -283,6 +294,7 @@ onUnmounted(() => {
       <div class="mi" @click="ctxVisible = false; openEdit(rowByKey(selectedKey))">编辑</div>
       <div class="mi" @click="ctxVisible = false; deleteRow(rowByKey(selectedKey))">删除</div>
       <div class="mi" @click="ctxVisible = false; copyText(rowByKey(selectedKey)?.netshCmd ?? '')">复制 netsh 命令</div>
+      <div class="mi" @click="ctxVisible = false; probeTarget(rowByKey(selectedKey))">测试目标连通性…</div>
       <div class="mi" @click="ctxVisible = false; openDiagnose(rowByKey(selectedKey))">诊断…</div>
     </div>
   </Teleport>

@@ -24,6 +24,34 @@ const error = ref('')
 const warning = ref('')
 const submitting = ref(false)
 
+// 目标连通性测试（对应 C# EntryDialog 的「测试目标连通性」）
+const probing = ref(false)
+const probeOk = ref(false)
+const probeMessage = ref('')
+
+watch([connectAddress, connectPort], () => { probeMessage.value = '' })
+
+async function testTarget() {
+  const addr = connectAddress.value.trim()
+  if (!addr) {
+    probeOk.value = false
+    probeMessage.value = '请先填写目标地址。'
+    return
+  }
+  probing.value = true
+  probeMessage.value = ''
+  try {
+    const r = await AppService.TestTarget(addr, Number(connectPort.value))
+    probeOk.value = r.ok
+    probeMessage.value = r.message
+  } catch (e) {
+    probeOk.value = false
+    probeMessage.value = '测试失败：' + String(e)
+  } finally {
+    probing.value = false
+  }
+}
+
 // 目标候选 / 跟随
 const candidates = ref<any[]>([])
 const selectedCandidate = ref('') // 候选地址（纯 IP）
@@ -206,6 +234,15 @@ async function submit() {
               <input type="checkbox" v-model="addFirewall" style="width:auto" :disabled="!env?.elevated" />
               同时创建入站放行规则（TCP）
             </label>
+          </div>
+
+          <div style="display:flex; align-items:center; gap:8px; margin-top:8px">
+            <button type="button" :disabled="probing || !connectAddress.trim() || !connectPort"
+                    @click="testTarget">
+              {{ probing ? '测试中…' : '🔌 测试目标连通性' }}
+            </button>
+            <span v-if="probeMessage"
+                  :style="{ color: probeOk ? 'var(--ok)' : 'var(--danger)' }">{{ probeMessage }}</span>
           </div>
 
           <div v-if="followKind" class="form-warning" style="margin-top:6px">
