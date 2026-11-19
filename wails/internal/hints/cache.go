@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"portproxymanager/internal/logging"
@@ -23,7 +24,12 @@ var (
 	cachedAt    time.Time
 	refreshTask *sync.WaitGroup
 	cacheTTL    = 60 * time.Second
+	quietLog    atomic.Bool
 )
+
+// SetQuietLogging 关闭候选探测的 INFO 日志。一次性 CLI 进程（计划任务的 --sync）
+// 每次都从空缓存开始，否则每个周期都会重复打印一遍"地址候选更新"。
+func SetQuietLogging(quiet bool) { quietLog.Store(quiet) }
 
 // Snapshot 当前快照（不启动探测）。
 func Snapshot() []AddressHint {
@@ -146,7 +152,7 @@ func publish(wsl, local, names, baseHints []AddressHint) {
 	if displaySorted(previous) == displaySorted(merged) {
 		return
 	}
-	if log := logging.Current(); log != nil && len(merged) > 0 {
+	if log := logging.Current(); log != nil && !quietLog.Load() && len(merged) > 0 {
 		sample := make([]string, 0, minInt(12, len(merged)))
 		for i := 0; i < len(merged) && i < 12; i++ {
 			sample = append(sample, merged[i].Display)

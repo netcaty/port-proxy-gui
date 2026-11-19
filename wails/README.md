@@ -12,7 +12,31 @@ wails3 build     # 生产构建，产物 bin/portproxymanager.exe（单文件，
 wails3 task build:cli   # 命令行伴生程序 bin/portproxymanager-cli.exe（console 子系统，注意须带 task 子命令）
 ```
 
-命令行场景（--dump / --hints）请用 `portproxymanager-cli.exe`：主程序是 GUI 子系统，交互式 cmd 不等待它，提示符会先返回。
+命令行场景（--dump / --hints / --sync）请用 `portproxymanager-cli.exe`：主程序是 GUI 子系统，交互式 cmd 不等待它，提示符会先返回。
+
+## 无人值守跟随同步
+
+GUI 退出后，跟随定时器也会停止。注册计划任务后由任务计划程序接管：登录时启动一次，
+之后每 5 分钟运行一次同步；主程序没在托盘常驻时跟随仍然生效。
+
+```bat
+:: 注册 / 删除计划任务（需要管理员权限）
+portproxymanager-cli.exe --install-sync
+portproxymanager-cli.exe --remove-sync
+
+:: 手动跑一轮（--json / --out 与 --dump 的用法一致）
+portproxymanager-cli.exe --sync
+portproxymanager-cli.exe --sync --json --out=%TEMP%\sync.json
+```
+
+- 任务名 `PortProxyManagerFollowSync`，以 `HighestAvailable` + `InteractiveToken` 运行，不弹 UAC；
+- 动作优先指向同目录的 `portproxymanager.exe --sync --no-elevate --data-dir=...`
+  （GUI 子系统，计划任务运行时不会闪控制台窗口）；
+- 数据目录在注册时固定，和当前实例的 meta.json 保持一致；
+- GUI 托盘菜单的「无人值守跟随同步」开关与 CLI 等价；
+- 与 GUI 内每 5 分钟的定时同步通过命名互斥锁 `Local\PortProxyManager.FollowSync` 串行化，
+  两边同时触发时后来者直接跳过；
+- `--sync` 退出码：`0` 成功/无变化/跳过，`1` 读取或更新失败，`2` 目标已变化但当前未提权。
 
 ## 功能对照（与 C# 版）
 
@@ -22,6 +46,7 @@ wails3 task build:cli   # 命令行伴生程序 bin/portproxymanager-cli.exe（c
 | 注册表监听自动刷新 | ✅ | RegNotifyChangeKeyValue 手写 syscall |
 | 数据目录（meta/settings/backups/logs） | ✅ | 与 C# 版**共用格式、共用数据目录**，可原地互换 |
 | 目标跟随（WSL/Hyper-V/VMware/VBox/沙盒） | ✅ | 5 分钟定时 + 手动同步；虚拟机优先按 MAC 认回 |
+| 无人值守跟随同步 | ✅ | `--install-sync` 注册计划任务；登录时启动 + 每 5 分钟运行 `--sync`，主程序退出后仍生效 |
 | 沙盒检测 | ✅ | 见下方"与 C# 版差异" |
 | ARP/网关候选 + 设备识别 | ✅ | arp.exe 解析、MAC OUI、Default Switch 锚点 |
 | 沙盒多 IP ICMP 去重 | ✅ | 600ms 并发 ping，全不可达时保留全部 |
@@ -33,6 +58,7 @@ wails3 task build:cli   # 命令行伴生程序 bin/portproxymanager-cli.exe（c
 | UAC 自提权（UAC 取消退回只读） | ✅ | ShellExecuteExW "runas"，错误码 1223 区分 |
 | 开机自启（计划任务，登录不弹 UAC） | ✅ | schtasks /xml，UTF-16 BOM，RunLevel=HighestAvailable |
 | CLI 只读模式 | ✅ | `--dump [--json] [--out=] [--data-dir=]`，JSON 字段与 C# 版一致 |
+| CLI 同步与任务管理 | ✅ | `--sync [--json] [--out=]`、`--install-sync`、`--remove-sync` |
 | CLI 伴生程序 | ✅ | `portproxymanager-cli.exe`（console 子系统）：交互式 cmd 会正常等待主 GUI exe（windowsgui 不等待），CLI 场景请用伴生 exe |
 | --selftest 自检 | ⬜ 未移植 | |
 
@@ -59,7 +85,8 @@ internal/               按 C# Services 一一对应：
   diagnoses   十步诊断             firewall   防火墙联动
   iphelper    iphlpsvc 管理        backup     导入导出/快照
   autorun     计划任务自启         singleinst 单实例
-  elevationx  UAC 自提权           cli        --dump 只读模式
+  synctask    无人值守同步计划任务  syncguard  跨进程同步互斥
+  elevationx  UAC 自提权           cli        --dump / --sync 等 CLI
   paths/logging/meta/settings/proc/winansi/... 基础设施
 frontend/               Vue 3 + TS（主表格、Entry/Diagnostics/Import/Log 对话框）
 ```

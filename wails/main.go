@@ -25,6 +25,7 @@ import (
 	"portproxymanager/internal/paths"
 	"portproxymanager/internal/settings"
 	"portproxymanager/internal/singleinst"
+	"portproxymanager/internal/synctask"
 )
 
 //go:embed all:frontend/dist
@@ -38,7 +39,7 @@ func main() {
 	opts := cli.Parse(os.Args[1:])
 
 	// CLI 只读模式：先挂父控制台（windowsgui 子系统默认不绑定 cmd 的控制台）
-	if opts.Help || opts.Dump || opts.Hints {
+	if opts.Help || opts.Dump || opts.Hints || opts.Sync || opts.InstallSync || opts.RemoveSync {
 		cli.AttachParentConsole()
 	}
 
@@ -53,6 +54,18 @@ func main() {
 	}
 	if opts.Hints {
 		os.Exit(cli.Hints(opts))
+	}
+
+	// 无人值守同步与计划任务管理：同样在单实例互斥和 UAC 之前处理，
+	// 否则计划任务会被正在运行的 GUI 当成"再次启动"而静默退出。
+	if opts.Sync {
+		os.Exit(cli.Sync(opts))
+	}
+	if opts.InstallSync {
+		os.Exit(cli.InstallSync(opts))
+	}
+	if opts.RemoveSync {
+		os.Exit(cli.RemoveSync())
 	}
 
 	pathsCtx, err := paths.Resolve(opts.DataDir)
@@ -218,6 +231,29 @@ func setupSystemTray(app *application.App, win application.Window, svc *AppServi
 			// 失败信息写日志（托盘无气泡 API 的替代提示）
 			if log := logging.Current(); log != nil {
 				log.Warn("开机自启设置失败：" + r.Message)
+			}
+		}
+	})
+	var syncTaskItem *application.MenuItem
+	syncTaskItem = menu.AddCheckbox("无人值守跟随同步", synctask.IsEnabled())
+	syncTaskItem.OnClick(func(*application.Context) {
+		var r synctask.Result
+		if synctask.IsEnabled() {
+			r = synctask.Disable()
+		} else {
+			exe, err := os.Executable()
+			if err != nil {
+				if log := logging.Current(); log != nil {
+					log.Warn("无人值守跟随同步设置失败：" + err.Error())
+				}
+				return
+			}
+			r = synctask.Enable(pathsCtx.DataDir, exe)
+		}
+		syncTaskItem.SetChecked(synctask.IsEnabled())
+		if !r.Ok && r.Message != "" {
+			if log := logging.Current(); log != nil {
+				log.Warn("无人值守跟随同步设置失败：" + r.Message)
 			}
 		}
 	})

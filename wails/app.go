@@ -31,6 +31,7 @@ import (
 	"portproxymanager/internal/paths"
 	"portproxymanager/internal/registryio"
 	"portproxymanager/internal/settings"
+	"portproxymanager/internal/syncguard"
 	"portproxymanager/internal/validator"
 )
 
@@ -291,6 +292,14 @@ func (a *AppService) SyncFollow(force bool) follow.SyncReport {
 }
 
 func (a *AppService) syncFollowInternal(force bool) follow.SyncReport {
+	// 计划任务（--sync）可能同时在跑：拿不到锁说明另一轮同步正在探测/写入，
+	// 本次直接跳过——它做的正是同一件事，重复执行没有意义。
+	guard, acquired := syncguard.TryAcquire()
+	if !acquired {
+		return follow.SyncReport{Items: []follow.SyncItem{}}
+	}
+	defer guard.Release()
+
 	entries, err := registryio.ReadAll()
 	if err != nil {
 		return follow.SyncReport{Items: []follow.SyncItem{}}

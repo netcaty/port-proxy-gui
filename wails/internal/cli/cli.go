@@ -18,14 +18,17 @@ import (
 
 // Options 命令行选项（对应 C# CliOptions）。
 type Options struct {
-	DataDir   string
-	Dump      bool
-	Hints     bool
-	JSON      bool
-	Out       string
-	Tray      bool
-	NoElevate bool
-	Help      bool
+	DataDir     string
+	Dump        bool
+	Hints       bool
+	Sync        bool
+	InstallSync bool
+	RemoveSync  bool
+	JSON        bool
+	Out         string
+	Tray        bool
+	NoElevate   bool
+	Help        bool
 }
 
 // Parse 解析命令行。
@@ -38,6 +41,12 @@ func Parse(args []string) Options {
 			o.Dump = true
 		case a == "--hints":
 			o.Hints = true
+		case a == "--sync":
+			o.Sync = true
+		case a == "--install-sync":
+			o.InstallSync = true
+		case a == "--remove-sync":
+			o.RemoveSync = true
 		case a == "--json":
 			o.JSON = true
 		case a == "--tray":
@@ -68,8 +77,11 @@ const HelpText = `PortProxy 管理器（Wails 版） — netsh portproxy 的图�
   --tray              启动后直接最小化到托盘。
   --dump              以文本输出当前全部映射后退出（只读，不需要管理员）。
   --hints             探测并输出全部目标地址候选后退出（只读，不需要管理员）。
-  --json              与 --dump 一起使用，输出 JSON。
-  --out=<文件>        与 --dump 一起使用，同时把结果写入文件。
+  --sync              立即执行一次目标跟随同步后退出（写入需要管理员权限）。
+  --install-sync      注册「无人值守跟随同步」计划任务（登录时启动，之后每 5 分钟一次）。
+  --remove-sync       删除「无人值守跟随同步」计划任务。
+  --json              与 --dump / --sync 一起使用，输出 JSON。
+  --out=<文件>        与 --dump / --sync 一起使用，同时把结果写入文件。
   --no-elevate        不自动提权（GUI 只读，写入会提示需要管理员权限）。
   -h, --help          显示本帮助。
 `

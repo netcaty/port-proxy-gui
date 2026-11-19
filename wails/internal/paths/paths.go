@@ -85,9 +85,10 @@ func (c *Context) EnsureLayout() error {
 // Resolve 解析数据目录。失败时返回可直接展示给用户的中文原因。
 func Resolve(requested string) (*Context, error) {
 	if strings.TrimSpace(requested) != "" {
-		// 相对路径按 exe 目录解析，避免依赖启动时的工作目录
-		base := exeDir()
-		full, err := filepath.Abs(filepath.Join(base, strings.Trim(strings.TrimSpace(requested), `"`)))
+		// 相对路径按 exe 目录解析，避免依赖启动时的工作目录。
+		// 绝对路径必须原样使用：Go 的 filepath.Join 不会像 C# Path.GetFullPath
+		// 那样在第二个参数为绝对路径时丢弃前缀（计划任务传的就是绝对路径）。
+		full, err := requestedPath(exeDir(), requested)
 		if err != nil {
 			return nil, fmt.Errorf("数据目录路径无效：%s\n%v", requested, err)
 		}
@@ -118,8 +119,7 @@ func Resolve(requested string) (*Context, error) {
 // ResolveForRead 只读场景（--dump）用：只算出路径，不建目录、不写探测文件。
 func ResolveForRead(requested string) (*Context, error) {
 	if strings.TrimSpace(requested) != "" {
-		base := exeDir()
-		full, err := filepath.Abs(filepath.Join(base, strings.Trim(strings.TrimSpace(requested), `"`)))
+		full, err := requestedPath(exeDir(), requested)
 		if err != nil {
 			return nil, fmt.Errorf("数据目录路径无效：%s（%v）", requested, err)
 		}
@@ -173,6 +173,16 @@ func exeDir() string {
 		return "."
 	}
 	return filepath.Dir(exe)
+}
+
+// requestedPath 解析 --data-dir：绝对路径原样使用，相对路径基于 base。
+// 去掉命令行/注册表里常见的包裹引号。
+func requestedPath(base, requested string) (string, error) {
+	p := strings.Trim(strings.TrimSpace(requested), `"`)
+	if filepath.IsAbs(p) {
+		return filepath.Abs(p)
+	}
+	return filepath.Abs(filepath.Join(base, p))
 }
 
 // commonData 取 %ProgramData%（CSIDL_COMMON_APPDATA）。

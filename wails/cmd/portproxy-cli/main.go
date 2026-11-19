@@ -32,10 +32,19 @@ func main() {
 	if opts.Hints {
 		os.Exit(cli.Hints(opts))
 	}
+	if opts.Sync {
+		os.Exit(cli.Sync(opts))
+	}
+	if opts.InstallSync {
+		os.Exit(cli.InstallSync(opts))
+	}
+	if opts.RemoveSync {
+		os.Exit(cli.RemoveSync())
+	}
 
 	// console 子系统的伴生程序不承载 GUI（双击会带黑窗），
 	// 没有 CLI 命令时给出指引用 exit 2 区分
 	fmt.Print(cli.HelpText)
-	fmt.Println("\n未指定 CLI 命令（--dump / --hints）。图形界面请使用同目录的 portproxymanager.exe。")
+	fmt.Println("\n未指定 CLI 命令（--dump / --hints / --sync / --install-sync / --remove-sync）。图形界面请使用同目录的 portproxymanager.exe。")
 	os.Exit(2)
 }
