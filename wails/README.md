@@ -33,7 +33,7 @@ portproxymanager-cli.exe --sync --json --out=%TEMP%\sync.json
 - 动作优先指向同目录的 `portproxymanager.exe --sync --no-elevate --data-dir=...`
   （GUI 子系统，计划任务运行时不会闪控制台窗口）；
 - 数据目录在注册时固定，和当前实例的 meta.json 保持一致；
-- GUI 托盘菜单的「无人值守跟随同步」开关与 CLI 等价；
+- GUI 托盘菜单的「无人值守跟随同步」开关与 CLI 等价，操作结果会写日志并弹窗提示；
 - 与 GUI 内每 5 分钟的定时同步通过命名互斥锁 `Local\PortProxyManager.FollowSync` 串行化，
   两边同时触发时后来者直接跳过；
 - `--sync` 退出码：`0` 成功/无变化/跳过，`1` 读取或更新失败，`2` 目标已变化但当前未提权。

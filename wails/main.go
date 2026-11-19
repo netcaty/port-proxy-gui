@@ -210,9 +210,6 @@ func setupSystemTray(app *application.App, win application.Window, svc *AppServi
 		win.Show()
 		win.UnMinimise()
 	})
-	menu.Add("同步跟随目标").OnClick(func(*application.Context) {
-		go svc.SyncFollow(false)
-	})
 	menu.Add("打开数据目录").OnClick(func(*application.Context) {
 		// explorer 打开数据目录（路径来自固定解析逻辑，无自由文本）
 		_ = exec.Command("explorer.exe", pathsCtx.DataDir).Start()
@@ -243,18 +240,37 @@ func setupSystemTray(app *application.App, win application.Window, svc *AppServi
 		} else {
 			exe, err := os.Executable()
 			if err != nil {
-				if log := logging.Current(); log != nil {
-					log.Warn("无人值守跟随同步设置失败：" + err.Error())
-				}
-				return
+				r = synctask.Result{Message: "无法确定程序路径：" + err.Error()}
+			} else {
+				r = synctask.Enable(pathsCtx.DataDir, exe)
 			}
-			r = synctask.Enable(pathsCtx.DataDir, exe)
 		}
+
+		// 以任务计划程序里的真实状态为准刷新勾选
 		syncTaskItem.SetChecked(synctask.IsEnabled())
-		if !r.Ok && r.Message != "" {
-			if log := logging.Current(); log != nil {
-				log.Warn("无人值守跟随同步设置失败：" + r.Message)
+
+		// 托盘菜单没有气泡提示：结果同时写日志并弹窗，避免“点了没反应”
+		msg := r.Message
+		if msg == "" {
+			msg = "操作失败，请查看日志文件。"
+		}
+		if log := logging.Current(); log != nil {
+			if r.Ok {
+				log.Info("无人值守跟随同步：" + msg)
+			} else {
+				log.Warn("无人值守跟随同步设置失败：" + msg)
 			}
+		}
+		if r.Ok {
+			app.Dialog.Info().
+				SetTitle("无人值守跟随同步").
+				SetMessage(msg).
+				Show()
+		} else {
+			app.Dialog.Error().
+				SetTitle("无人值守跟随同步").
+				SetMessage(msg).
+				Show()
 		}
 	})
 	menu.AddSeparator()
