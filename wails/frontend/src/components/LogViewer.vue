@@ -33,19 +33,21 @@ onMounted(async () => {
 <template>
   <Teleport to="body">
     <div class="modal-mask" @click.self="emit('close')">
-      <div class="modal" style="min-width: 720px">
+      <div class="modal" style="width: 860px">
         <div class="modal-header">操作日志</div>
         <div class="modal-body">
-          <div style="display: flex; gap: 8px; margin-bottom: 10px; flex-wrap: wrap">
-            <button v-for="f in files.slice(0, 7)" :key="f.name"
-                    :style="{ fontWeight: f.name === current ? 600 : 400 }"
-                    @click="open(f.name)">{{ f.name }}</button>
-            <span v-if="files.length === 0" class="dim">无日志文件</span>
+          <div style="margin-bottom: 10px">
+            <div v-if="files.length > 0" class="seg">
+              <button v-for="f in files.slice(0, 7)" :key="f.name"
+                      :class="{ on: f.name === current }"
+                      @click="open(f.name)">{{ f.name }}</button>
+            </div>
+            <span v-else class="dim">无日志文件</span>
           </div>
           <div class="log-view" style="max-height: 50vh">{{ content }}</div>
         </div>
         <div class="modal-footer">
-          <button @click="emit('close')">关闭</button>
+          <button class="btn primary" @click="emit('close')">关闭</button>
         </div>
       </div>
     </div>

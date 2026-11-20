@@ -76,6 +76,12 @@ portproxymanager-cli.exe --sync --json --out=%TEMP%\sync.json
 - 与 C# 版**不要同时运行**（避免并发写）。
 - 评估期建议 `--data-dir` 指向 C# 版数据目录做互验。
 
+## 界面（前端）
+
+- 视觉方向：**跳线面板**——一行映射 = 一条跳线，跟随中的映射是有源链路（行首 LED 常亮、链路粗箭头）。主色信号青、状态色通电绿；图标全部为行内 SVG，不用 emoji。
+- 反馈：应用内 toast + 确认对话框（不用 `window.alert/confirm`）；快捷键 `Ctrl+N` 新增、`Del` 删除、`/` 聚焦搜索、`F5` 刷新。
+- 本地 UI 预览（不动真实注册表）：`npm run dev` 后打开 `http://127.0.0.1:9245/mocked.html`。`mocked.html` 只用于开发，`src/mock-api.ts` 按绑定方法 ID 拦截 runtime 调用并回放样例数据，不会进 `wails3 build` 产物。
+
 ## 布局
 
 ```

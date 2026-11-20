@@ -136,6 +136,7 @@ html, body {
 }
 
 input[type="search"]::-webkit-search-cancel-button { cursor: pointer; }
+input[type="checkbox"], input[type="radio"] { accent-color: var(--signal); }
 
 /* ---- 非管理员横幅 ---- */
 .banner {
@@ -175,6 +176,7 @@ table.grid th.on { color: var(--signal-ink); }
 table.grid th.on::after { content: "▲"; font-size: 8px; margin-left: 4px; vertical-align: 1px; }
 table.grid th.on.desc::after { content: "▼"; }
 table.grid th.non-sort { cursor: default; }
+.modal table.grid th { cursor: default; }
 table.grid tbody tr:hover { background: var(--row-hover); }
 table.grid tbody tr.selected {
   background: var(--signal-wash);
@@ -234,6 +236,7 @@ td.note { white-space: normal; }
 .empty p { margin: 0; }
 .empty .hint { color: var(--ink-3); font-size: 12.5px; }
 .empty .btn { margin-top: 12px; }
+.empty-tip { padding: 32px 20px; text-align: center; color: var(--ink-3); font-size: 12.5px; }
 
 /* ---- 状态栏 ---- */
 .statusbar {
@@ -351,7 +354,8 @@ button.sbtn:hover { background: var(--card); color: var(--ink); }
   border-radius: 6px;
   font-family: var(--font-mono);
   font-size: 12px;
-  overflow-x: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
   user-select: text;
 }
 
