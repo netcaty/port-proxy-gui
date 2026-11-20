@@ -91,7 +91,8 @@ func IsFollowable(h hints.AddressHint) bool {
 }
 
 // Matches 判断探测结果是否还是同一条跟随规则。
-// 虚拟机优先比 MAC（改名也不怕）；两边都有 MAC 时不一致绝不按名字误匹配；WSL 比发行版名。
+// 虚拟机优先比 MAC（改名也不怕）；两边都有 MAC 时不一致绝不按名字误匹配；
+// WSL 比发行版名；沙盒比 .wsb 文件名（MAC 每次启动都会重新分配）。
 func Matches(h hints.AddressHint, t *Target) bool {
 	if !IsFollowable(h) {
 		return false
@@ -113,6 +114,19 @@ func Matches(h hints.AddressHint, t *Target) bool {
 		return strings.EqualFold(*targetID, *hintID)
 	}
 
+	// 沙盒每次启动都是临时创建的 VM，MAC 从 Hyper-V 地址池重新分配、IP 跟着变，
+	// 稳定身份只有 .wsb 文件名（沙盒同时只能跑一个实例）。MAC 只作展示，不参与认回。
+	if hintKind == "wsb" && targetKind == "wsb" {
+		if wsbGenericID(clean(t.ID)) {
+			return true // 目标没绑定具体 .wsb 文件名（早期通用 ID），接受任意沙盒结果
+		}
+		hintID := clean(h.ID)
+		if hintID == nil || wsbGenericID(hintID) {
+			return false // 这轮探测没拿到文件名，不能确认是同一个沙盒，宁可未检测到
+		}
+		return strings.EqualFold(*clean(t.ID), *hintID)
+	}
+
 	targetMac, hintMac := normalizeMacPtr(t.Mac), normalizeMacPtr(h.Mac)
 	if targetMac != nil && hintMac != nil {
 		return *targetMac == *hintMac
@@ -130,6 +144,13 @@ func Matches(h hints.AddressHint, t *Target) bool {
 func TargetEquals(a, b *Target) bool {
 	if a == nil || b == nil {
 		return a == nil && b == nil
+	}
+	// 沙盒 MAC 每次启动都会变，回显也按 .wsb 文件名认，跟 Matches 语义一致
+	if a.KindKey() == "wsb" && b.KindKey() == "wsb" {
+		if wsbGenericID(clean(a.ID)) || wsbGenericID(clean(b.ID)) {
+			return true
+		}
+		return strings.EqualFold(*clean(a.ID), *clean(b.ID))
 	}
 	aMac, bMac := normalizeMacPtr(a.Mac), normalizeMacPtr(b.Mac)
 	if aMac != nil && bMac != nil {
@@ -211,9 +232,16 @@ type SyncReport struct {
 	UnresolvedCount     int        `json:"unresolvedCount"`
 }
 
+// wsbGenericID 没绑定具体 .wsb 文件名的通用标识（探测兜底的 "WindowsSandbox" / 空值）。
+func wsbGenericID(id *string) bool {
+	return id == nil || strings.EqualFold(*id, "WindowsSandbox")
+}
+
 // Sync 执行一次跟随同步。entries 是映射 + meta 的列表；elevated 决定是否能写。
+// updateFollow 非 nil 时，探测命中（含目标本就无变化）后回写最新的 FollowMac/FollowLabel：
+// 沙盒每次启动 MAC 都会重新分配，不回写的话 TargetEquals（编辑界面回显）会因 MAC 失配认不出这条跟随。
 func Sync(entries []models.PortProxyEntry, getMeta func(key string) *models.EntryMeta,
-	elevated bool, forceRefresh bool) SyncReport {
+	elevated bool, forceRefresh bool, updateFollow func(key string, mac, label string)) SyncReport {
 	report := SyncReport{Items: []SyncItem{}}
 
 	type pendingItem struct {
@@ -305,6 +333,7 @@ func Sync(entries []models.PortProxyEntry, getMeta func(key string) *models.Entr
 			continue
 		}
 		address := ip.String()
+		refreshFollow(updateFollow, p.entry.Key(), p.target, *matched)
 		current := currentByKey[strings.ToLower(p.entry.Key())]
 		currentTarget := p.entry.NormalizedConnect()
 		if current.ConnectAddress != "" {
@@ -354,6 +383,24 @@ func Sync(entries []models.PortProxyEntry, getMeta func(key string) *models.Entr
 		})
 	}
 	return finalize(report)
+}
+
+// refreshFollow 探测命中后把最新的 MAC / 展示文本回写 meta（值没变就不打扰调用方）。
+// 跟随匹配不依赖 wsb 的 MAC，但 TargetEquals 与编辑界面的回显要靠它认回。
+func refreshFollow(updateFollow func(key string, mac, label string), key string,
+	target *Target, h hints.AddressHint) {
+	if updateFollow == nil {
+		return
+	}
+	mac := deref(normalizeMacPtr(h.Mac))
+	label := h.DisplayText()
+	if strings.EqualFold(orDefault(target.Mac, ""), mac) && orDefault(target.Label, "") == label {
+		return
+	}
+	if log := logging.Current(); log != nil {
+		log.Info("跟随 " + target.Display() + "：更新已存跟随标识（MAC " + orDefault(normalizeMacPtr(h.Mac), "无") + "）")
+	}
+	updateFollow(key, mac, label)
 }
 
 func collectHints(forceRefresh bool) []hints.AddressHint {

@@ -43,6 +43,50 @@ func TestMatchesWSLByDistroName(t *testing.T) {
 	}
 }
 
+func TestMatchesWSBByWsbFileName(t *testing.T) {
+	// 沙盒每次启动 MAC 都会重新分配；同名 .wsb + 新 MAC 必须认回来
+	newBoot := hints.AddressHint{
+		Address: "172.18.63.220", Kind: str("wsb"),
+		ID: str("微信沙盒.wsb"), Mac: str("00-15-5D-B1-F7-B6"), Confirmed: true,
+	}
+	oldTarget := &Target{Kind: "wsb", ID: str("微信沙盒.wsb"), Mac: str("00155DB1FE3A"), Label: str("172.18.55.100 - wsb:微信沙盒.wsb")}
+	if !Matches(newBoot, oldTarget) {
+		t.Errorf("重启后 MAC 变了，按 .wsb 文件名应认回同一沙盒")
+	}
+
+	// 其他 .wsb 文件名不误配
+	if Matches(newBoot, &Target{Kind: "wsb", ID: str("别的沙盒.wsb"), Mac: str("00155DB1FE3A")}) {
+		t.Errorf("不同 .wsb 文件名不应匹配")
+	}
+
+	// 早期探测没拿到文件名时，存的是通用 ID：接受任意沙盒结果
+	if !Matches(newBoot, &Target{Kind: "wsb", ID: str("WindowsSandbox")}) {
+		t.Errorf("通用 ID 的沙盒规则应接受任意沙盒候选")
+	}
+	if !Matches(newBoot, &Target{Kind: "wsb"}) {
+		t.Errorf("没存 ID 的沙盒规则应接受任意沙盒候选")
+	}
+
+	// 这轮探测没拿到文件名时不能确认是同一个沙盒，宁可未检测到
+	nameless := hints.AddressHint{
+		Address: "172.18.63.220", Kind: str("wsb"),
+		ID: str("WindowsSandbox"), Mac: str("00-15-5D-B1-F7-B6"), Confirmed: true,
+	}
+	if Matches(nameless, oldTarget) {
+		t.Errorf("候选缺 .wsb 文件名时不应按 MAC/任意方式匹配")
+	}
+
+	// TargetEquals 回显同样按文件名认
+	if !TargetEquals(&Target{Kind: "wsb", ID: str("微信沙盒.wsb"), Mac: str("00155DB1FE3A")},
+		&Target{Kind: "wsb", ID: str("微信沙盒.wsb"), Mac: str("00155DB1F7B6")}) {
+		t.Errorf("TargetEquals 对 wsb 应按 .wsb 文件名比较")
+	}
+	if TargetEquals(&Target{Kind: "wsb", ID: str("微信沙盒.wsb")},
+		&Target{Kind: "wsb", ID: str("别的沙盒.wsb")}) {
+		t.Errorf("TargetEquals 对不同 .wsb 文件名不应相等")
+	}
+}
+
 func TestIsFollowable(t *testing.T) {
 	gw := hints.AddressHint{Address: "192.168.1.1", Kind: str("gateway")}
 	if IsFollowable(gw) {

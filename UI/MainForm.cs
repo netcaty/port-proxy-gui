@@ -914,7 +914,7 @@ public sealed class MainForm : Form
                 : new HashSet<string>(StringComparer.OrdinalIgnoreCase) { onlyKey };
 
             var report = await TargetFollowService.SyncAsync(
-                entries, _service, _elevated, forceRefresh, keys);
+                entries, _service, _elevated, forceRefresh, keys, RefreshFollowMeta);
 
             if (IsDisposed || Disposing) return;
 
@@ -975,6 +975,28 @@ public sealed class MainForm : Form
         {
             if (manual && !IsDisposed) Cursor = Cursors.Default;
             Interlocked.Exchange(ref _followSyncRunning, 0);
+        }
+    }
+
+    /// <summary>跟随探测命中后回写最新 FollowMac/FollowLabel（值没变时 Sync 侧不会调用）。</summary>
+    private void RefreshFollowMeta(string key, string? mac, string? label)
+    {
+        try
+        {
+            // SyncAsync 的探测循环在线程池上跑，meta 的写要回到 UI 线程
+            BeginInvoke(() =>
+            {
+                if (IsDisposed) return;
+                var meta = _meta.GetOrCreate(key);
+                meta.FollowMac = mac;
+                meta.FollowLabel = label;
+                meta.CreatedAt ??= DateTimeOffset.Now;
+                _meta.Save();
+            });
+        }
+        catch
+        {
+            // 窗口正在销毁
         }
     }
 

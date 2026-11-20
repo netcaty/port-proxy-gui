@@ -16,7 +16,7 @@
 
 - 根（.NET 9，零 NuGet 依赖，无测试工程）：`dotnet build -c Debug`；发布 `dotnet publish -c Release -r win-x64 --self-contained false -p:PublishSingleFile=true -o dist\fx`（框架依赖约 296 KB）或 `--self-contained true` 自包含版（约 48 MB）。
 - WinUI：`winapp run PortProxyManager.WinUI\PortProxyManager.WinUI.csproj`；发布 `dotnet publish ... -c Release -r win-x64 --self-contained true -o dist`（**目录形态**，理由见下）。
-- Wails：`wails3 dev` / `wails3 build` / `wails3 task build:cli`。`--dump`/`--hints` 必须用 `portproxymanager-cli.exe`（主程序是 GUI 子系统，交互式 cmd 不等待它）。
+- Wails：`wails3 dev` / `wails3 task build:all`（= GUI `wails3 build` + CLI `wails3 task build:cli`）。`--dump`/`--hints` 必须用 `portproxymanager-cli.exe`（主程序是 GUI 子系统，交互式 cmd 不等待它）。**注意：`go build ./...` 是纯编译检查，多包产物直接丢弃，不会更新 `bin/` 里实际运行的 exe**——改完 Go 源码必须跑 `wails3 task build:all`，否则用户手里的 exe 还是旧的（本坑已发生过：单测全绿但沙盒跟随修复没进 exe）。
 - 验证手段：`--dump [--json]`、`--hints`、`--selftest`（仅 C# 版，Go 版未移植）。
 - **工具链现状：WinUI 目标框架是 `net11.0-windows10.0.26100.0`，需要 .NET SDK ≥11**；当前环境实测可用的是 scoop 安装的 .NET 11.0.100（`dotnet` 不在 PATH，需用完整路径调用）。根目录工程目标 .NET 9。Go 1.27.1 已装。
 - **WinUI 目标框架降级结论（实测）**：`net10.0-windows10.0.26100.0` 用 11.0.100 SDK 实测，只需改 `TargetFramework`，包与代码零改动；`net9.0` 需把 `H.NotifyIcon.WinUI` 从 2.4.1 降到 2.3.2，且若用 .NET 9 SDK（C# 13）编译，`CommunityToolkit.Mvvm` 8.4.2 的 partial property 源生成器不工作，31 处 `[ObservableProperty] partial` 要改成字段式；`net8.0`/`net9.0` 均已 EOL，不建议。降级时保留 `windows10.0.26100.0` 平台版本——WinAppSDK 2.7 要求 `Microsoft.Windows.SDK.NET.Ref >= 10.0.26100.38`。
@@ -35,7 +35,7 @@
 
 - **子进程输出三态编码**：ANSI(GetACP)/UTF-8/UTF-16LE 无 BOM——netsh/arp 在中文系统上的解码是最易回归点。
 - **沙盒探测**：`wsb.exe` CLI 链路（含 App Execution Alias 包内路径解析、提权令牌注入 ShellProcessRunner）已清理——提权跑 wsb 会卡死 30s；`wsb ip` 已停用。沙盒 IP = ARP + Hyper-V 启发式 + ICMP 可达性去重（600ms 并发 ping，全不可达时保留全部）；须按运行状态过滤虚拟网络邻居，关机残留与虚拟交换机内部邻居（如 MyApps vSwitch）不进下拉；负缓存加速。探测超时矩阵、防重入、两阶段缓存发布、未确认邻居过滤均来自 git log 六连修复。运行时确认靠进程 + 可见窗口，`.wsb` 文件名从进程命令行（PowerShell CIM）提取。
-- **跟随语义**：虚拟机优先按 MAC 认回（改名不怕），WSL 按发行版名；WSL mirrored 网络固定跟随 `127.0.0.1`；探测不到时保留最后已知地址；已被外部删除的映射不会被重建。
+- **跟随语义**：虚拟机优先按 MAC 认回（改名不怕），WSL 按发行版名；**沙盒按 .wsb 文件名认回**——沙盒每次启动临时创建 VM，MAC 从 Hyper-V 地址池重新分配、IP 跟着变，MAC 不能当身份（按 MAC 比对时重启后永远「未检测到」，三版同病已修）；候选这轮没拿到 .wsb 文件名时宁报「未检测到」也不误配。探测命中（已更新/无变化）后把最新 FollowMac/FollowLabel 回写 meta 自愈，否则 TargetEquals 编辑回显会因 MAC 失配认不出跟随；C# 的 MetaStore 无锁，SyncAsync 探测循环在线程池上跑，回写必须封回 UI 线程（MainForm.BeginInvoke / WinUI Marshal），Go 版 meta.Store 自带互斥可直接写。WSL mirrored 网络固定跟随 `127.0.0.1`；探测不到时保留最后已知地址；已被外部删除的映射不会被重建。
 - **单实例**：命名 Mutex + 激活事件，重复启动要静默激活旧窗口并补 Focus；容错 AbandonedMutex；C#/Go 两版锁名不能冲突；UAC 取消码 1223 要区分并退回只读。
 - **控制台**：GUI 子系统下控制台输出会丢失——CLI 场景用 console 子系统伴生 exe。
 - **下拉与布局回归**：候选 display 字段缺失会导致渲染空白；跟随模式显示会被截断；控件 Dock 会重叠遮挡（用 FlowLayoutPanel 等排列修复）。hints 的 `gw` 类型已重命名为 `gateway`，display 为 `IP - type:id` 格式，需填齐以便用户识别来源。

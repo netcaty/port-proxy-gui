@@ -307,11 +307,24 @@ func (a *AppService) syncFollowInternal(force bool) follow.SyncReport {
 	}
 	report := follow.Sync(entries, func(key string) *models.EntryMeta {
 		return a.meta.Get(key)
-	}, elevation.IsElevated(), force)
+	}, elevation.IsElevated(), force, a.updateFollowMeta)
 	if len(report.Items) > 0 {
 		a.emitEntriesChanged()
 	}
 	return report
+}
+
+// updateFollowMeta 跟随探测命中后回写最新的 FollowMac/FollowLabel。
+// meta.Store 自带互斥，不需要再拿 a.mu（syncFollowInternal 本来也不持锁）。
+func (a *AppService) updateFollowMeta(key, mac, label string) {
+	m := a.meta.GetOrCreate(key)
+	m.FollowMac = strPtrLocal(mac)
+	m.FollowLabel = strPtrLocal(label)
+	if m.CreatedAt == nil {
+		now := time.Now()
+		m.CreatedAt = &now
+	}
+	_ = a.meta.Save()
 }
 
 // ValidateEntry 前端表单校验入口。

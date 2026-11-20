@@ -152,6 +152,20 @@ public static class TargetFollowService
             return string.Equals(targetId, hintId, StringComparison.OrdinalIgnoreCase);
         }
 
+        // 沙盒每次启动都是临时创建的 VM，MAC 从 Hyper-V 地址池重新分配、IP 跟着变，
+        // 稳定身份只有 .wsb 文件名（沙盒同时只能跑一个实例）。MAC 只作展示，不参与认回。
+        if (hintKind == "wsb" && targetKind == "wsb")
+        {
+            if (IsGenericWsbId(FollowTarget.Clean(target.Id)))
+                return true; // 目标没绑定具体 .wsb 文件名（早期通用 ID），接受任意沙盒结果
+
+            var hintId = FollowTarget.Clean(hint.Id);
+            if (hintId is null || IsGenericWsbId(hintId))
+                return false; // 这轮探测没拿到文件名，不能确认是同一个沙盒，宁可未检测到
+
+            return string.Equals(FollowTarget.Clean(target.Id), hintId, StringComparison.OrdinalIgnoreCase);
+        }
+
         var targetMac = NormalizeMac(target.Mac);
         var hintMac = NormalizeMac(hint.Mac);
 
@@ -175,10 +189,23 @@ public static class TargetFollowService
                && string.Equals(targetName, hintName, StringComparison.OrdinalIgnoreCase);
     }
 
+    /// <summary>没绑定具体 .wsb 文件名的通用标识（探测兜底的 "WindowsSandbox" / 空值）。</summary>
+    private static bool IsGenericWsbId(string? id)
+        => id is null || id.Equals("WindowsSandbox", StringComparison.OrdinalIgnoreCase);
+
     /// <summary>界面里判断两个跟随规则是不是同一个（用于回显已有选择）。</summary>
     public static bool TargetEquals(FollowTarget? a, FollowTarget? b)
     {
         if (a is null || b is null) return a is null && b is null;
+
+        // 沙盒 MAC 每次启动都会变，回显也按 .wsb 文件名认，跟 Matches 语义一致
+        if (a.KindKey == "wsb" && b.KindKey == "wsb")
+        {
+            if (IsGenericWsbId(FollowTarget.Clean(a.Id)) || IsGenericWsbId(FollowTarget.Clean(b.Id)))
+                return true;
+            return string.Equals(
+                FollowTarget.Clean(a.Id), FollowTarget.Clean(b.Id), StringComparison.OrdinalIgnoreCase);
+        }
 
         var aMac = NormalizeMac(a.Mac);
         var bMac = NormalizeMac(b.Mac);
@@ -221,6 +248,7 @@ public static class TargetFollowService
         bool elevated,
         bool forceRefresh,
         IReadOnlySet<string>? onlyKeys = null,
+        Action<string, string?, string?>? updateFollow = null,
         CancellationToken cancellationToken = default)
     {
         var targets = new List<(PortProxyEntry Entry, FollowTarget Target)>();
@@ -314,6 +342,7 @@ public static class TargetFollowService
             }
 
             var address = ip.ToString();
+            RefreshFollow(updateFollow, entry.Key, target, hint);
             currentByKey.TryGetValue(entry.Key, out var current);
             var currentTarget = current?.NormalizedConnect ?? entry.NormalizedConnect;
 
@@ -359,6 +388,27 @@ public static class TargetFollowService
         }
 
         return new FollowSyncReport(items);
+    }
+
+    /// <summary>
+    /// 探测命中后把最新的 MAC / 展示文本回写 meta（值没变就不打扰调用方）。
+    /// 跟随匹配不依赖 wsb 的 MAC，但 TargetEquals 与编辑界面的回显要靠它认回。
+    /// </summary>
+    private static void RefreshFollow(
+        Action<string, string?, string?>? updateFollow, string key, FollowTarget target, AddressHint hint)
+    {
+        if (updateFollow is null) return;
+
+        var mac = NormalizeMac(hint.Mac);
+        var label = hint.Display;
+        if (string.Equals(NormalizeMac(target.Mac), mac, StringComparison.Ordinal)
+            && string.Equals(target.Label ?? string.Empty, label ?? string.Empty, StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        LogService.Current?.Info($"跟随 {target.Display}：更新已存跟随标识（MAC {mac ?? "无"}）");
+        updateFollow(key, mac, label);
     }
 
     private static async Task<IReadOnlyList<AddressHint>> CollectHintsAsync(

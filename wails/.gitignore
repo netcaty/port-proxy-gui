@@ -5,4 +5,4 @@ frontend/dist
 frontend/node_modules
 
 # Go build output
-portproxymanager.exe
+*.exe

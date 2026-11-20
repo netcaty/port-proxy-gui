@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"portproxymanager/internal/elevation"
 	"portproxymanager/internal/follow"
@@ -119,7 +120,26 @@ func Sync(o Options) int {
 		payload.Busy = true
 		return emitSync(payload, buildSyncText(payload, metaStore), o, 0)
 	}
-	report := follow.Sync(entries, metaStore.Get, elevation.IsElevated(), false)
+	report := follow.Sync(entries, metaStore.Get, elevation.IsElevated(), false,
+		func(key, mac, label string) {
+			// 探测命中后回写最新 MAC/展示文本；meta.Store 自带互斥，落盘失败只记日志
+			m := metaStore.GetOrCreate(key)
+			if mac != "" {
+				m.FollowMac = &mac
+			} else {
+				m.FollowMac = nil
+			}
+			if label != "" {
+				m.FollowLabel = &label
+			} else {
+				m.FollowLabel = nil
+			}
+			if m.CreatedAt == nil {
+				now := time.Now()
+				m.CreatedAt = &now
+			}
+			_ = metaStore.Save()
+		})
 	guard.Release()
 
 	payload.Report = report

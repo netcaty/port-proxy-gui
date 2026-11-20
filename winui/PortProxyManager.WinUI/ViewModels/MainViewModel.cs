@@ -1258,7 +1258,7 @@ public partial class MainViewModel : ObservableObject
                 : new HashSet<string>(StringComparer.OrdinalIgnoreCase) { onlyKey };
 
             var report = await TargetFollowService.SyncAsync(
-                entries, _service, AppRuntime.Elevated, forceRefresh, keys);
+                entries, _service, AppRuntime.Elevated, forceRefresh, keys, RefreshFollowMeta);
 
             Marshal(() =>
             {
@@ -1301,6 +1301,20 @@ public partial class MainViewModel : ObservableObject
         {
             Interlocked.Exchange(ref _followSyncRunning, 0);
         }
+    }
+
+    /// <summary>跟随探测命中后回写最新 FollowMac/FollowLabel（值没变时 Sync 侧不会调用）。</summary>
+    private void RefreshFollowMeta(string key, string? mac, string? label)
+    {
+        // SyncAsync 的探测循环在线程池上跑，meta 的写要回到 UI 线程
+        Marshal(() =>
+        {
+            var meta = AppRuntime.Meta.GetOrCreate(key);
+            meta.FollowMac = mac;
+            meta.FollowLabel = label;
+            meta.CreatedAt ??= DateTimeOffset.Now;
+            AppRuntime.Meta.Save();
+        });
     }
 
     public void Dispose()
