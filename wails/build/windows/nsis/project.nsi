@@ -31,6 +31,12 @@ Unicode true
 ## !define REQUEST_EXECUTION_LEVEL "admin"            # Default "admin"  see also https://nsis.sourceforge.io/Docs/Chapter4.html
 ## !define WAILS_INSTALL_SCOPE     "user"             # Default "machine" - set to "user" for per-user install ($LOCALAPPDATA) without UAC prompt
 ####
+## This app writes HKLM + runs netsh, so it elevates itself at runtime; the
+## installer itself defaults to a per-user install (no UAC prompt).
+!ifndef WAILS_INSTALL_SCOPE
+    !define WAILS_INSTALL_SCOPE "user"
+!endif
+####
 ## Include the wails tools
 ####
 !include "wails_tools.nsh"
@@ -72,7 +78,7 @@ ManifestDPIAware true
 #!finalize 'signtool --file "%1"'
 
 Name "${INFO_PRODUCTNAME}"
-OutFile "..\..\..\bin\${INFO_PROJECTNAME}-${ARCH}-installer.exe" # Name of the installer's file.
+OutFile "..\..\..\bin\portproxymanager-wails-${INFO_PRODUCTVERSION}-${ARCH}-setup.exe" # Name of the installer's file.
 !if "${WAILS_INSTALL_SCOPE}" == "user"
     InstallDir "$LOCALAPPDATA\Programs\${INFO_PRODUCTNAME}"
 !else
@@ -93,6 +99,10 @@ Section
     
     !insertmacro wails.files
 
+    ; Console companion for --dump / --hints / --sync (GUI subsystem exe is not
+    ; usable from an interactive console without it).
+    File "/oname=portproxymanager-cli.exe" "..\..\..\bin\portproxymanager-cli.exe"
+
     CreateShortcut "$SMPROGRAMS\${INFO_PRODUCTNAME}.lnk" "$INSTDIR\${PRODUCT_EXECUTABLE}"
     CreateShortCut "$DESKTOP\${INFO_PRODUCTNAME}.lnk" "$INSTDIR\${PRODUCT_EXECUTABLE}"
 
@@ -107,7 +117,11 @@ Section "uninstall"
 
     RMDir /r "$AppData\${PRODUCT_EXECUTABLE}" # Remove the WebView2 DataPath
 
-    RMDir /r $INSTDIR
+    ; Delete program files individually instead of wiping $INSTDIR: with a
+    ; per-user install the data directory (meta.json / settings.json / backups
+    ; / logs) lives right next to the executables and must survive uninstall.
+    Delete "$INSTDIR\${PRODUCT_EXECUTABLE}"
+    Delete "$INSTDIR\portproxymanager-cli.exe"
 
     Delete "$SMPROGRAMS\${INFO_PRODUCTNAME}.lnk"
     Delete "$DESKTOP\${INFO_PRODUCTNAME}.lnk"
@@ -116,4 +130,7 @@ Section "uninstall"
     !insertmacro wails.unassociateCustomProtocols
 
     !insertmacro wails.deleteUninstaller
+
+    ; RMDir silently fails while data files remain, which is what we want.
+    RMDir "$INSTDIR"
 SectionEnd

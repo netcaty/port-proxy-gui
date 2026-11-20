@@ -41,7 +41,7 @@ import (
 const AppName = "PortProxyManager"
 
 // AppVersion 版本号（跟随仓库 release 版本）。
-const AppVersion = "2.2.0"
+const AppVersion = "2.2.1"
 
 // EntryRow 主表格一行 = 注册表条目 + meta 合并视图。
 type EntryRow struct {

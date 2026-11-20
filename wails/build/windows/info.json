@@ -1,17 +1,17 @@
 {
 	"fixed": {
-		"file_version": "2.2.0",
-		"product_version": "2.2.0"
+		"file_version": "2.2.1",
+		"product_version": "2.2.1"
 	},
 	"info": {
 		"0409": {
-			"FileVersion": "2.2.0",
-			"ProductVersion": "2.2.0",
-			"CompanyName": "My Company",
+			"FileVersion": "2.2.1",
+			"ProductVersion": "2.2.1",
+			"CompanyName": "netcaty@github.com",
 			"FileDescription": "Windows TCP portproxy management tool",
-			"LegalCopyright": "© 2026, My Company",
+			"LegalCopyright": "(c) 2026, netcaty@github.com",
 			"ProductName": "PortProxyManager",
-			"Comments": "This is a comment"
+			"Comments": "Manage netsh interface portproxy rules with a GUI"
 		}
 	}
 }

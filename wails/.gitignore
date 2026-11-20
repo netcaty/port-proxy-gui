@@ -3,6 +3,8 @@
 bin
 frontend/dist
 frontend/node_modules
+# wails3 generate bindings 的临时目录（clean 模式下生成，正常会自行删除）
+frontend/.bindings-tmp-*
 
 # Go build output
 *.exe

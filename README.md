@@ -1,151 +1,125 @@
 # PortProxy 管理器
 
-Windows 上管理 TCP 端口转发的图形界面。不用再记 `netsh` 的一长串参数，鼠标填表就能增删改；
-**WSL2 / 虚拟机的 IP 变了，映射会自动跟随更新**，不会悄悄失效。
+Windows 上管理 TCP 端口转发的图形界面（Go + Wails v3）。不用再记 `netsh interface portproxy` 的长参数，
+鼠标填表就能增删改；**WSL / 虚拟机 / Windows 沙盒换 IP 后，映射会自动跟随更新**，不会悄悄失效。
 
-> **核心亮点：目标跟随。** 把目标设为某个 WSL 发行版或虚拟机，重启后 IP 变了也不用管，
-> 程序会在后台探测并重建映射。
+![主界面](docs/screenshots/main.png)
 
 ---
 
-## 为什么需要它
+## 下载与安装
 
-| 常见问题 | 本工具怎么做 |
+从 [Releases](https://github.com/netcaty/port-proxy-gui/releases) 下载：
+
+| 产物 | 说明 |
 |---|---|
-| `listenaddress= listenport= connectaddress= connectport=` 参数长，容易填反 | 表单填写，实时预览等价命令 |
-| 端口写错、地址族填错，只能事后排查 | 创建前校验地址族、端口范围、重复监听和占用 |
-| WSL2 / 虚拟机重启后 IP 变了，映射静默失效 | **目标跟随**：自动探测并更新目标地址 |
-| 映射不通，不知道是服务、监听还是目标的问题 | **一键诊断**：逐项检查并给出修复按钮 |
-| 几条映射就分不清谁是谁 | 名称 / 分组 / 备注，可过滤、可导出 |
-| 每次增删改都要开 cmd 提权 | 启动时一次 UAC，之后都在界面里操作 |
+| `portproxymanager-wails-<版本>-amd64-setup.exe` | 安装包。按当前用户安装到 `%LOCALAPPDATA%\Programs\PortProxyManager`，安装过程不需要管理员权限 |
+| `portproxymanager-wails-<版本>-amd64-portable.zip` | 绿色版。解压后双击 `portproxymanager.exe`；数据保存在程序同目录 |
+
+- 首次写映射时会弹一次 UAC（写 HKLM + `netsh` 必须提权），之后都在界面内操作；取消 UAC 则进入只读模式。
+- 卸载只删程序文件和快捷方式，**保留 `meta.json` / `settings.json` / `backups` / `logs`** 等业务数据。
+- 支持 Windows 10 / Server 2016 及以上，需要 WebView2 运行时（安装包自带引导程序）。
+- 安装包未签名，SmartScreen 可能提示；可自行签名（`wails3 task sign:installer`）。
 
 ---
 
-## 快速开始
+## 核心功能
 
-1. 双击 `PortProxyManager.exe`，在 UAC 提示里点「是」。
-2. 主界面会列出当前所有映射；「新增」或双击一行开始编辑。
-3. 填写监听地址/端口、目标地址/端口。**如果目标是 WSL 或虚拟机，把目标切到「跟随目标」并选择对应设备**（见下一节）。
-4. 创建后工具会立刻重读配置核对，确认映射真的生效才报成功。
+- **映射增删改**：表单填写，实时预览等价的 `netsh` 命令；写入后重读注册表核对，失败自动回滚。
+- **目标跟随**：把目标设为 WSL 发行版、Hyper-V / VMware / VirtualBox 虚拟机或 Windows 沙盒；
+  IP 变化后自动探测并重建映射。虚拟机优先按 MAC 认回，WSL 按发行版名，沙盒按 `.wsb` 文件名。
+- **一键诊断**：注册表 → 地址类型 → 监听写法 → 地址归属 → 保留端口 → IP Helper → 端口监听 →
+  本机连通性 → 目标连通性 → 防火墙，失败项直接给修复按钮。
+- **日常使用**：注册表监听自动刷新、分组/搜索/备注、导入导出 JSON（差异预览）、自动快照、
+  托盘常驻、单实例、开机自启、防火墙联动、IP Helper 管理。
+- **无人值守**：`--install-sync` 注册计划任务，GUI 退出后仍每 5 分钟同步一次跟随目标。
 
----
+### 新增映射
 
-## 目标跟随：WSL / 虚拟机换 IP 也不怕
+名称 / 分组 / 备注只用于展示；进入命令行的只有校验过的地址和端口。
 
-WSL2（NAT 模式）和虚拟机每次重启都可能换一个 IP。传统的 portproxy 映射写死目标地址，
-IP 一变转发就断了，而且界面上看起来一切正常，很难发现。
+![新增映射](docs/screenshots/add-entry.png)
 
-在编辑映射时，把目标切到「跟随目标」，再选择某个 WSL 发行版、Hyper-V / VMware / VirtualBox 虚拟机，
-或 Windows 沙盒，保存即可。切回「固定 IP」则恢复手输地址。之后：
+### 跟随映射
 
-- **自动更新**：程序启动、网络变化、每 5 分钟检查一次，只有 IP 真的变了才重建映射；
-- **认得住机器**：虚拟机优先按 MAC 识别，改名也不怕；WSL 按发行版名识别；
-- **不会改丢**：探测不到目标时保留最后已知地址；已被外部删除的映射也不会被自动重建；
-- **镜像网络**：WSL 使用 mirrored 网络时固定跟随 `127.0.0.1`；
-- **手动同步**：行右键「立即同步跟随目标」，或托盘菜单「同步跟随目标」。
+![编辑跟随映射](docs/screenshots/follow-edit.png)
 
-适用场景：WSL2 开发环境、Hyper-V / VMware / VirtualBox 虚拟机、Windows 沙盒。
+### 十步诊断
 
-程序启动时会在后台预热所有候选地址（WSL、虚拟机、沙盒、网关和局域网设备），
-打开编辑窗口即可直接选择，不需要先等探测。
-
-> 跟随写入需要管理员权限。程序退出后不会继续监控，下次启动会自动补一次同步；
-> WSL 发行版需处于运行状态，虚拟机需开机。
+![诊断](docs/screenshots/diagnostics.png)
 
 ---
 
-## 一键诊断
+## 命令行
 
-选中一条映射，点工具栏「诊断」或右键「诊断转发链路…」。会依次检查：
-
-注册表条目、地址与类型、监听地址写法、监听地址归属、系统保留端口、IP Helper、
-监听器、本机连通性、目标连通性、防火墙规则。
-
-失败项会直接给出修复按钮，例如「启动/重启 IP Helper」「重建为 0.0.0.0」
-「补充防火墙规则」；修复后自动重新检查。报告可以一键复制。
-
----
-
-## 其他功能
-
-- **映射列表**：名称、分组、类型、监听/目标地址与端口、跟随状态、防火墙；支持排序和过滤。
-- **增删改**：编辑等于「先删后加」，失败会自动回滚到原配置。
-- **前置校验**：地址族匹配、端口 1–65535、重复监听拦截、端口占用提示、类型自动推断。
-- **目标地址候选**：默认网关和局域网设备直接走 ARP / 反向 DNS；WSL、Windows 沙盒、
-  Hyper-V、VMware、VirtualBox 必须先由对应探测确认正在运行，再用 KVP / guest CLI / ARP
-  解析 IP。关机残留和虚拟交换机内部邻居（例如 MyApps vSwitch）不会进入下拉；同一沙盒
-  出现多个 IP 时用 ICMP 可达性只保留最近的一个。也可直接手输 IP。
-- **IP Helper 状态**：服务没运行时顶部横幅提示，一键启动。
-- **防火墙联动**（可选）：创建映射时同步添加放行规则，删除时按需清理。
-- **导入导出**：JSON 含映射、备注和跟随设置；导入前先预览差异，逐条勾选。
-- **自动备份**：删除、修改、导入前自动快照，默认保留最近 50 份、30 天。
-- **托盘常驻**：关闭窗口进托盘；开机自启可避免每次启动弹 UAC。
-- **日志**：界面内可查看完整的 netsh 命令、退出码和原始报错。
-
----
-
-## 命令行参数
-
-适合脚本或自动化场景：
-
-```
-PortProxyManager.exe [选项]
-
---tray              启动后直接收进托盘
---dump              只读输出当前全部映射（不需要管理员）
---hints             探测并输出全部目标地址候选（只读，不需要管理员）
---json              配合 --dump / --hints 输出 JSON
---out=<文件>        配合 --dump / --hints 同时写入文件
---no-elevate        只读模式；写入时提示需要管理员权限
---data-dir=<路径>   高级：指定数据目录
--h, --help          显示帮助
-```
-
-示例：
+GUI 主程序是 windowsgui 子系统，交互式 cmd 不会等待它。命令行场景请使用同目录的
+`portproxymanager-cli.exe`（安装包和绿色版都已包含）。
 
 ```bat
-:: 查看当前映射
-PortProxyManager.exe --dump
-
-:: 探测目标地址候选（WSL / 虚拟机 / 沙盒 / 网关 / 局域网设备）
-PortProxyManager.exe --hints
-
-:: 输出 JSON 给脚本解析
-PortProxyManager.exe --hints --json --out=%TEMP%\hints.json
+portproxymanager-cli.exe --dump --json
+portproxymanager-cli.exe --hints
+portproxymanager-cli.exe --sync
+portproxymanager-cli.exe --install-sync
 ```
 
----
+| 参数 | 说明 |
+|---|---|
+| `--dump` | 以文本输出当前全部映射后退出（只读，不需要管理员） |
+| `--hints` | 探测并输出全部目标地址候选后退出（只读） |
+| `--sync` | 立即执行一次目标跟随同步后退出（写入需要管理员） |
+| `--install-sync` | 注册「无人值守跟随同步」计划任务（登录启动 + 每 5 分钟） |
+| `--remove-sync` | 删除该计划任务 |
+| `--json` | 与 `--dump` / `--sync` 一起使用，输出 JSON |
+| `--out=<文件>` | 与 `--dump` / `--sync` 一起使用，同时把结果写入文件 |
+| `--data-dir=<路径>` | 指定数据目录（meta.json / settings.json / logs / backups） |
+| `--tray` | 启动后直接最小化到托盘（GUI） |
+| `--no-elevate` | 不自动提权（GUI 以只读模式运行） |
+| `-h`, `--help` | 显示帮助 |
 
-## 已知限制
-
-- **只支持 TCP。** `netsh portproxy` 本身不支持 UDP，需要 UDP 转发得换其他方案。
-- **每次启动要过一次 UAC。** 写入 portproxy 必须管理员权限；只读的 `--dump` 不需要。
-- **目标跟随需要程序运行并提权。** 退出后不会继续监控，下次启动补一次同步；
-  WSL 需运行、虚拟机需开机，探测不到时保留最后已知地址。
-- **删除不可逆。** 有二次确认和自动备份兜底。
-- **映射随重启自动恢复。** portproxy 由 IP Helper 在开机时从注册表重放；
-  「开机自启」只是让图形界面常驻托盘。
-
----
-
-## 安全说明
-
-名称、分组、备注和跟随标识只用于界面展示与本地匹配，不会拼进任何命令行；
-进入 netsh 的只有经过校验的 IP 和端口。
+`--sync` 退出码：`0` 成功/无变化/跳过，`1` 读取或更新失败，`2` 目标已变化但当前未提权。
 
 ---
 
 ## 从源码构建
 
-需要 .NET 9 SDK。
+需要 Go 1.26+、Node 18+、[wails3 CLI](https://v3.wails.io/)（版本与 `wails/go.mod` 对齐）和 NSIS 3（打安装包时）。
+源码在 `wails/` 目录。
 
 ```bat
-:: 框架依赖（本机需装 .NET 9 Desktop Runtime），单文件约 296 KB
-dotnet publish -c Release -r win-x64 --self-contained false -p:PublishSingleFile=true -o dist\fx
+cd wails
 
-:: 自包含（免安装运行时），单文件约 48 MB
-dotnet publish -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true ^
-  -p:EnableCompressionInSingleFile=true -o dist\selfcontained
+:: 开发（前端热重载）
+wails3 dev
+
+:: 生产构建：GUI + CLI 伴生程序
+wails3 task build:all
+:: → bin\portproxymanager.exe、bin\portproxymanager-cli.exe
+
+:: 打安装包（默认按用户安装，自动先构建 GUI + CLI）
+wails3 task package
+:: → bin\portproxymanager-wails-<版本>-amd64-setup.exe
+
+:: 所有用户安装（装到 Program Files，需要管理员）
+wails3 task package INSTALL_SCOPE=machine
 ```
 
-工程只使用 WinForms 和 BCL，没有 NuGet 依赖。
+绿色版：把 `bin\portproxymanager.exe`、`bin\portproxymanager-cli.exe` 和一份说明文件放进同一目录压缩即可。
+
+---
+
+## 数据目录
+
+优先级：`--data-dir` → exe 同目录 → `%ProgramData%\PortProxyManager`（实测可写才用）。
+
+- 绿色版与按用户安装时数据在程序目录；装到 `Program Files` 时自动落到 `%ProgramData%`。
+- 数据格式与历史版本互通，但**不要同时运行两个实例**（并发写会冲突）。
+
+---
+
+## 限制
+
+- 只支持 TCP：`netsh portproxy` 本身不支持 UDP。
+- 目标跟随需要程序运行并提权；WSL 需运行、虚拟机需开机，探测不到时保留最后已知地址。
+- 删除不可逆，有二次确认和自动备份兜底。
+
+更多实现细节见 [`wails/README.md`](wails/README.md)。

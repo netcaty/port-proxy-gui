@@ -3,26 +3,26 @@
 #
 # The lines below are called `modelines`. See `:help modeline`
 
-name: "portproxymanager.exe"
+name: "portproxymanager"
 arch: ${GOARCH}
 platform: "linux"
-version: "0.1.0"
+version: "2.2.1"
 section: "default"
 priority: "extra"
 maintainer: ${GIT_COMMITTER_NAME} <${GIT_COMMITTER_EMAIL}>
 description: "Windows TCP portproxy management tool"
-vendor: "My Company"
+vendor: "netcaty@github.com"
 homepage: "https://wails.io"
 license: "MIT"
 release: "1"
 
 contents:
-  - src: "./bin/portproxymanager.exe"
-    dst: "/usr/local/bin/portproxymanager.exe"
+  - src: "./bin/portproxymanager"
+    dst: "/usr/local/bin/portproxymanager"
   - src: "./build/appicon.png"
-    dst: "/usr/share/icons/hicolor/128x128/apps/portproxymanager.exe.png"
-  - src: "./build/linux/portproxymanager.exe.desktop"
-    dst: "/usr/share/applications/portproxymanager.exe.desktop"
+    dst: "/usr/share/icons/hicolor/128x128/apps/portproxymanager.png"
+  - src: "./build/linux/portproxymanager.desktop"
+    dst: "/usr/share/applications/portproxymanager.desktop"
 
 # Default dependencies for the GTK4 + WebKitGTK 6.0 stack (Ubuntu 24.04+ / Debian 13+)
 depends:
