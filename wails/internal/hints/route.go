@@ -1,83 +1,60 @@
 package hints
 
-// 默认网关查询（纯 API 版，替代 PowerShell Get-NetIPConfiguration）：
-// GetIpForwardTable 取目的地址 0.0.0.0/0 的默认路由行，
-// 网关 IP 在 dwForwardGateway（网络字节序），经 ifIndex 关联网卡名。
-// C# 版 GatewayAddresses 是纯内存 API，这里保持同一量级（毫秒级）。
+// 默认网关查询（GetIpForwardTable2）：取目的前缀 0.0.0.0/0 的路由行，
+// NextHop 即网关；用 InterfaceIndex 关联网卡名。
+// 纯 API（毫秒级，与 C# 的 GatewayAddresses 同量级），不解析任何本地化文本。
 
 import (
-	"encoding/binary"
-	"fmt"
 	"net"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
 )
 
-const (
-	afInetForward          = 2 // AF_INET
-	mibIPForwardRowSize    = 56
-	ipForwardMetRICDoneovo = 0
-)
-
-var procGetIpForwardTable = windows.NewLazySystemDLL("iphlpapi.dll").NewProc("GetIpForwardTable")
-
 // queryGatewaysFast 纯 API 查默认网关。失败返回 nil（调用方回退 PowerShell 版）。
 func queryGatewaysFast() []Gateway {
-	var size uint32
-	// 第一次调用取缓冲区大小（ERROR_INSUFFICIENT_BUFFER = 122）
-	procGetIpForwardTable.Call(0, uintptr(unsafe.Pointer(&size)), 0)
-	if size == 0 || size > 1<<20 {
+	var table *windows.MibIpForwardTable2
+	if err := windows.GetIpForwardTable2(afInet, &table); err != nil || table == nil {
 		return nil
 	}
+	defer windows.FreeMibTable(unsafe.Pointer(table))
 
-	buf := make([]byte, size)
-	ret, _, _ := procGetIpForwardTable.Call(
-		uintptr(unsafe.Pointer(&buf[0])), uintptr(unsafe.Pointer(&size)), 0)
-	if ret != 0 {
+	if table.NumEntries == 0 || table.NumEntries > 100000 {
 		return nil
 	}
-
-	if len(buf) < 4 {
-		return nil
-	}
-	count := binary.LittleEndian.Uint32(buf[0:4])
-	need := 4 + int(count)*mibIPForwardRowSize
-	if int(count) > 100000 || len(buf) < need {
-		return nil
-	}
+	rows := unsafe.Slice(&table.Table[0], int(table.NumEntries))
 
 	// ifIndex → 网卡名（用于 label）
-	byIndex := map[int]string{}
-	ifaces, err := net.Interfaces()
-	if err == nil {
+	byIndex := map[uint32]string{}
+	if ifaces, err := net.Interfaces(); err == nil {
 		for _, nic := range ifaces {
-			byIndex[nic.Index] = nic.Name
+			byIndex[uint32(nic.Index)] = nic.Name
 		}
 	}
+	return gatewaysFromRows(rows, byIndex)
+}
 
+// gatewaysFromRows 从路由表行里挑出 IPv4 默认路由的网关。
+func gatewaysFromRows(rows []windows.MibIpForwardRow2, byIndex map[uint32]string) []Gateway {
 	var out []Gateway
-	for i := 0; i < int(count); i++ {
-		row := buf[4+i*mibIPForwardRowSize : 4+(i+1)*mibIPForwardRowSize]
-		dest := binary.LittleEndian.Uint32(row[0:4])
-		mask := binary.LittleEndian.Uint32(row[4:8])
-		gw := binary.LittleEndian.Uint32(row[12:16])
-		ifIndex := int(binary.LittleEndian.Uint32(row[16:20]))
-		// 默认路由：目的 0.0.0.0、掩码 0.0.0.0
-		if dest != 0 || mask != 0 || gw == 0 {
+	for i := range rows {
+		row := &rows[i]
+		if row.DestinationPrefix.PrefixLength != 0 { // 只看默认路由
 			continue
 		}
-		gwIP := net.IPv4(byte(gw), byte(gw>>8), byte(gw>>16), byte(gw>>24))
-		if gwIP == nil || gwIP.To4() == nil || IsUseless(gwIP) {
+		if row.NextHop.Family != windows.AF_INET { // IPv6 默认路由留给 IPv6 场景
+			continue
+		}
+		addr := (*windows.RawSockaddrInet4)(unsafe.Pointer(&row.NextHop)).Addr[:]
+		ip := net.IP(addr).To4()
+		if ip == nil || IsUseless(ip) { // 跳过 0.0.0.0（on-link 默认路由）
 			continue
 		}
 		label := ""
-		if name, ok := byIndex[ifIndex]; ok {
+		if name, ok := byIndex[row.InterfaceIndex]; ok {
 			label = cleanAdapterName(name, "")
 		}
-		out = append(out, Gateway{Address: gwIP.String(), Label: label})
+		out = append(out, Gateway{Address: ip.String(), Label: label})
 	}
 	return out
 }
-
-var _ = fmt.Sprint

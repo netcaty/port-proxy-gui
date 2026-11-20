@@ -42,7 +42,9 @@ func schtasks() string { return windir.SystemDir() + string(os.PathSeparator) + 
 
 // IsEnabled 查询计划任务是否存在。
 func IsEnabled() bool {
-	res := proc.RunQuiet(schtasks(), []string{"/query", "/tn", TaskName}, proc.WithTimeoutMs(5000))
+	// schtasks 的错误文本随系统语言变化 → 显式 ANSI 解码。
+	res := proc.RunQuiet(schtasks(), []string{"/query", "/tn", TaskName},
+		proc.WithTimeoutMs(5000), proc.WithEncoding(proc.Ansi))
 	return res.Ok()
 }
 
@@ -75,7 +77,8 @@ func Enable(dataDir, exePath string) Result {
 	}
 	defer os.Remove(temp)
 
-	res, err := proc.Run(schtasks(), []string{"/create", "/tn", TaskName, "/xml", temp, "/f"}, proc.WithTimeoutMs(10000))
+	res, err := proc.Run(schtasks(), []string{"/create", "/tn", TaskName, "/xml", temp, "/f"},
+		proc.WithTimeoutMs(10000), proc.WithEncoding(proc.Ansi))
 	if err != nil || !res.Ok() {
 		return Result{Message: netsh.Friendly(res)}
 	}
@@ -91,7 +94,8 @@ func Disable() Result {
 	if !elevation.IsElevated() {
 		return Result{Message: "删除无人值守跟随同步需要管理员权限。"}
 	}
-	res, err := proc.Run(schtasks(), []string{"/delete", "/tn", TaskName, "/f"}, proc.WithTimeoutMs(10000))
+	res, err := proc.Run(schtasks(), []string{"/delete", "/tn", TaskName, "/f"},
+		proc.WithTimeoutMs(10000), proc.WithEncoding(proc.Ansi))
 	if (err == nil && res.Ok()) || !IsEnabled() {
 		return Result{Ok: true, Message: "已删除无人值守跟随同步计划任务。"}
 	}

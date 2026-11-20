@@ -19,9 +19,10 @@ func NetshPath() string {
 }
 
 // Run 执行 netsh 并记录操作日志。
+// netsh 的报错文本是本地化的（中文系统为 ANSI 代码页），编码必须显式指定。
 func Run(args []string) (proc.Result, error) {
 	display := "netsh " + strings.Join(quoteForDisplayAll(args), " ")
-	res, err := proc.RunLogged(display, NetshPath(), args)
+	res, err := proc.RunLogged(display, NetshPath(), args, proc.WithEncoding(proc.Ansi))
 	if err != nil {
 		return proc.Result{ExitCode: -1, StdErr: err.Error()}, fmt.Errorf("无法执行 netsh：%v", err)
 	}

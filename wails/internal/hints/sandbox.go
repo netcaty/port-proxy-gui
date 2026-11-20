@@ -210,10 +210,12 @@ func firstN(items []string, n int) []string {
 // sandboxIPReachable 用系统 ping 探测一个沙盒 IP 是否可达（600ms）。
 // 用 ping.exe 而非原始 ICMP socket：后者在 Windows 上需要管理员权限，
 // 而 C# 的 Ping 类走系统 API 无需提权，ping.exe 行为与之等价。
+// 只匹配 ASCII 的 "ttl="，因此按 UTF-8 解码即可——ASCII 与 ANSI 字节一致，
+// 不需要再走 winansi（ANSI 解码只留给 netsh/schtasks 这类本地化输出）。
 func sandboxIPReachable(address string) bool {
 	ping := windir.SystemDir() + string(osPathSeparator) + "ping.exe"
 	res := proc.RunQuiet(ping, []string{
 		"-n", "1", "-w", strconv.Itoa(SandboxPingMS), address,
-	}, proc.WithTimeoutMs(SandboxPingMS+1200))
+	}, proc.WithTimeoutMs(SandboxPingMS+1200), proc.WithEncoding(proc.Utf8))
 	return res.Ok() && strings.Contains(strings.ToLower(res.StdOut), "ttl=")
 }

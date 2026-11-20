@@ -38,6 +38,7 @@
 - **跟随语义**：虚拟机优先按 MAC 认回（改名不怕），WSL 按发行版名；**沙盒按 .wsb 文件名认回**——沙盒每次启动临时创建 VM，MAC 从 Hyper-V 地址池重新分配、IP 跟着变，MAC 不能当身份（按 MAC 比对时重启后永远「未检测到」，三版同病已修）；候选这轮没拿到 .wsb 文件名时宁报「未检测到」也不误配。探测命中（已更新/无变化）后把最新 FollowMac/FollowLabel 回写 meta 自愈，否则 TargetEquals 编辑回显会因 MAC 失配认不出跟随；C# 的 MetaStore 无锁，SyncAsync 探测循环在线程池上跑，回写必须封回 UI 线程（MainForm.BeginInvoke / WinUI Marshal），Go 版 meta.Store 自带互斥可直接写。WSL mirrored 网络固定跟随 `127.0.0.1`；探测不到时保留最后已知地址；已被外部删除的映射不会被重建。
 - **单实例**：命名 Mutex + 激活事件，重复启动要静默激活旧窗口并补 Focus；容错 AbandonedMutex；C#/Go 两版锁名不能冲突；UAC 取消码 1223 要区分并退回只读。
 - **控制台**：GUI 子系统下控制台输出会丢失——CLI 场景用 console 子系统伴生 exe。
+- **网络变化触发**：Go 版用 `NotifyIpInterfaceChange`（`internal/netwatch`，3 秒防抖，注册失败退回 5 分钟定时器）；`x/sys/windows` 已封装该 API 与 `CancelMibChangeNotify2`，不要再手写 LazyProc 或退回轮询。ARP 邻居表走 `GetIpNetTable2`（`internal/hints/neighbors.go`），不要改回解析 `arp.exe` 输出。
 - **下拉与布局回归**：候选 display 字段缺失会导致渲染空白；跟随模式显示会被截断；控件 Dock 会重叠遮挡（用 FlowLayoutPanel 等排列修复）。hints 的 `gw` 类型已重命名为 `gateway`，display 为 `IP - type:id` 格式，需填齐以便用户识别来源。
 - **SelfTest** 内置快照污染防护；手测写真实注册表/netsh 时用高位端口，测后即删。
 

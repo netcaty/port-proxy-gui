@@ -275,7 +275,8 @@ export function StartIpHelper(): $CancellablePromise<iphelper$0.ActionResult> {
 
 /**
  * StartWatcher 启动注册表监听：外部改动 → 界面自动刷新。
- * 同时后台预热地址候选缓存、启动目标跟随定时器（对应 C# 启动 4s 首同步 + 5min 轮询）。
+ * 同时后台预热地址候选缓存、启动目标跟随定时器（对应 C# 启动 4s 首同步 + 5min 轮询），
+ * 并监听网络地址变化（对应 C# NetworkChange.NetworkAddressChanged，3 秒防抖）。
  */
 export function StartWatcher(): $CancellablePromise<void> {
     return $Call.ByID(4274695666);

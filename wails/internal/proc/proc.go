@@ -1,6 +1,10 @@
 // Package proc 移植自 C# Services/ProcRunner.cs：
-// 统一的子进程执行封装。默认按系统 ANSI 代码页解码，中文不乱码；
-// 个别工具（PowerShell / wsl.exe）输出 UTF-8 或 UTF-16，可显式指定编码。
+// 统一的子进程执行封装。调用方必须显式声明输出编码：
+//   - netsh / schtasks / VBoxManage / vmrun 用 ANSI（本地化文本，中文系统为代码页 936）；
+//   - PowerShell、wsl hostname、ping 用 UTF-8；wsl -l 用 UTF-16。
+//
+// 直接依赖 ANSI 解码的调用点已收敛到上面几个「输出带本地化文本」的工具，
+// winansi 不再参与 arp（已改 GetIpNetTable2）和 ping 这类纯 ASCII 场景。
 package proc
 
 import (

@@ -2,6 +2,10 @@ package hints
 
 // VMware / VirtualBox 虚拟机名称识别（对应 C# ProbeVmNamesAsync）：
 // 用各自 CLI 把运行中虚拟机的 MAC 映射回名称。工具不存在时保留 MAC 兜底。
+//
+// 这两个 CLI 的输出里含虚拟机名与 .vmx 路径，可能带有中文本地化字符；
+// 沿用 C# 版的 ANSI 解码（与三版行为保持一致），也是 winansi 剩余的两个
+// 合法消费者之一（另一个是 netsh/schtasks）。
 
 import (
 	"os"
@@ -77,7 +81,8 @@ func probeVirtualBoxNames(timeoutMs int) map[string]string {
 	if exe == "" {
 		return names
 	}
-	list := proc.RunQuiet(exe, []string{"list", "runningvms"}, proc.WithTimeoutMs(minInt(timeoutMs, VBoxListMS)))
+	list := proc.RunQuiet(exe, []string{"list", "runningvms"},
+		proc.WithTimeoutMs(minInt(timeoutMs, VBoxListMS)), proc.WithEncoding(proc.Ansi))
 	if !list.Ok() {
 		return names
 	}
@@ -90,7 +95,7 @@ func probeVirtualBoxNames(timeoutMs int) map[string]string {
 		count++
 		name, uuid := m[1], m[2]
 		info := proc.RunQuiet(exe, []string{"showvminfo", uuid, "--machinereadable"},
-			proc.WithTimeoutMs(minInt(timeoutMs, VBoxInfoMS)))
+			proc.WithTimeoutMs(minInt(timeoutMs, VBoxInfoMS)), proc.WithEncoding(proc.Ansi))
 		if !info.Ok() {
 			continue
 		}
@@ -115,7 +120,8 @@ func probeVMwareNames(timeoutMs int) map[string]string {
 	if exe == "" {
 		return names
 	}
-	list := proc.RunQuiet(exe, []string{"list"}, proc.WithTimeoutMs(minInt(timeoutMs, VMwareListMS)))
+	list := proc.RunQuiet(exe, []string{"list"},
+		proc.WithTimeoutMs(minInt(timeoutMs, VMwareListMS)), proc.WithEncoding(proc.Ansi))
 	if !list.Ok() {
 		return names
 	}

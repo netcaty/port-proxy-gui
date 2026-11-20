@@ -28,6 +28,7 @@ import (
 	"portproxymanager/internal/meta"
 	"portproxymanager/internal/models"
 	"portproxymanager/internal/netsh"
+	"portproxymanager/internal/netwatch"
 	"portproxymanager/internal/paths"
 	"portproxymanager/internal/probe"
 	"portproxymanager/internal/registryio"
@@ -96,6 +97,7 @@ type AppService struct {
 	meta     *meta.Store
 	settings *settings.Store
 	watcher  *registryio.Watcher
+	netWatch *netwatch.Watcher
 	app      *application.App
 	mu       sync.Mutex // 序列化写操作（netsh 写 + meta 变更）
 
@@ -111,12 +113,27 @@ func NewAppService(p *paths.Context, m *meta.Store, s *settings.Store) *AppServi
 func (a *AppService) SetApp(app *application.App) { a.app = app }
 
 // StartWatcher 启动注册表监听：外部改动 → 界面自动刷新。
-// 同时后台预热地址候选缓存、启动目标跟随定时器（对应 C# 启动 4s 首同步 + 5min 轮询）。
+// 同时后台预热地址候选缓存、启动目标跟随定时器（对应 C# 启动 4s 首同步 + 5min 轮询），
+// 并监听网络地址变化（对应 C# NetworkChange.NetworkAddressChanged，3 秒防抖）。
 func (a *AppService) StartWatcher() {
 	a.watcher = registryio.NewWatcher(func() {
 		a.emitEntriesChanged()
 	})
 	a.watcher.Start()
+
+	// 网络一变（WLAN 切换、WSL/虚拟机重启拿新 IP）就同步，不必等 5 分钟定时器。
+	a.netWatch = netwatch.New(func() {
+		if log := logging.Current(); log != nil {
+			log.Info("检测到网络地址变化，开始同步跟随目标。")
+		}
+		a.syncFollowInternal(true)
+	})
+	if err := a.netWatch.Start(); err != nil {
+		// 注册失败不致命：跟随仍由定时器兜底（与 C# 取消订阅后的行为一致）。
+		if log := logging.Current(); log != nil {
+			log.Warn("网络变化监听不可用，跟随同步继续按 5 分钟定时执行：" + err.Error())
+		}
+	}
 
 	// 后台预热候选（下拉打开时只读快照，不阻塞界面）
 	go hints.RefreshIfStale(true)
@@ -148,6 +165,9 @@ func (a *AppService) followLoop() {
 
 // Stop 停止后台 goroutine（注册窗口关闭时调用）。
 func (a *AppService) Stop() {
+	if a.netWatch != nil {
+		a.netWatch.Stop()
+	}
 	select {
 	case <-a.followStop:
 	default:
@@ -171,7 +191,7 @@ func (a *AppService) ServiceName() string { return "AppService" }
 func (a *AppService) ServiceStartup(ctx context.Context, options map[string]any) error { return nil }
 
 // ServiceShutdown Wails 服务生命周期。
-func (a *AppService) ServiceShutdown() {}
+func (a *AppService) ServiceShutdown() { a.Stop() }
 
 // ---- 查询 ----
 

@@ -45,10 +45,10 @@ portproxymanager-cli.exe --sync --json --out=%TEMP%\sync.json
 | 映射增删改 + netsh 预览 | ✅ | 写后重读注册表核对；修改失败自动回滚 |
 | 注册表监听自动刷新 | ✅ | RegNotifyChangeKeyValue 手写 syscall |
 | 数据目录（meta/settings/backups/logs） | ✅ | 与 C# 版**共用格式、共用数据目录**，可原地互换 |
-| 目标跟随（WSL/Hyper-V/VMware/VBox/沙盒） | ✅ | 5 分钟定时 + 手动同步；虚拟机优先按 MAC 认回 |
+| 目标跟随（WSL/Hyper-V/VMware/VBox/沙盒） | ✅ | 启动 4 秒首同步、网络地址变化即时触发（3 秒防抖）、5 分钟定时兜底 + 手动同步；虚拟机优先按 MAC 认回 |
 | 无人值守跟随同步 | ✅ | `--install-sync` 注册计划任务；登录时启动 + 每 5 分钟运行 `--sync`，主程序退出后仍生效 |
 | 沙盒检测 | ✅ | 见下方"与 C# 版差异" |
-| ARP/网关候选 + 设备识别 | ✅ | arp.exe 解析、MAC OUI、Default Switch 锚点 |
+| ARP/网关候选 + 设备识别 | ✅ | GetIpNetTable2 邻居表、MAC OUI、Default Switch 锚点 |
 | 沙盒多 IP ICMP 去重 | ✅ | 600ms 并发 ping，全不可达时保留全部 |
 | 一键诊断（十步检查+修复） | ✅ | 注册表→格式→写法→归属→保留端口→iphelper→监听→连通→目标→防火墙 |
 | 目标连通性测试 | ✅ | 编辑对话框按钮 + 行右键菜单（对应 C# EntryDialog / MainForm） |
@@ -93,7 +93,15 @@ internal/               按 C# Services 一一对应：
   iphelper    iphlpsvc 管理        backup     导入导出/快照
   autorun     计划任务自启         singleinst 单实例
   synctask    无人值守同步计划任务  syncguard  跨进程同步互斥
+  netwatch    网络地址变化监听（NotifyIpInterfaceChange + 3 秒防抖）
   elevationx  UAC 自提权           cli        --dump / --sync 等 CLI
   paths/logging/meta/settings/proc/winansi/... 基础设施
 frontend/               Vue 3 + TS（主表格、Entry/Diagnostics/Import/Log 对话框）
 ```
+
+## 系统集成实现要点
+
+- **邻居表（ARP）**：`GetIpNetTable2` 读结构化的 IP/MAC/接口索引，不解析 `arp.exe` 输出、不受控制台代码页影响。
+- **默认网关**：`GetIpForwardTable2` 取 `0.0.0.0/0` 路由的 NextHop（失败才回退 PowerShell）。
+- **网络变化**：`NotifyIpInterfaceChange` 回调 + 3 秒防抖触发跟随同步，与 C# 的 `NetworkChange.NetworkAddressChanged` 语义对齐；注册失败时自动退回 5 分钟定时器。
+- **子进程编码**：调用方显式声明编码；ANSI（winansi）只用于 netsh / schtasks / VBoxManage / vmrun 这类带本地化文本的输出，ping 等纯 ASCII 匹配已改用 UTF-8。

@@ -6,15 +6,12 @@ package hints
 
 import (
 	"net"
-	"os/exec"
-	"regexp"
 	"strings"
 	"sync"
 	"time"
 
 	"portproxymanager/internal/logging"
 	"portproxymanager/internal/proc"
-	"portproxymanager/internal/windir"
 )
 
 // AdapterKind 网卡分类。
@@ -37,6 +34,7 @@ type AdapterInfo struct {
 }
 
 type LocalAdapter struct {
+	Index   int // 接口索引，用于把邻居表行关联回网卡
 	Address string
 	Prefix  int
 	Kind    AdapterKind
@@ -53,11 +51,6 @@ type Gateway struct {
 	Address string
 	Label   string
 }
-
-var (
-	arpRowRe  = regexp.MustCompile(`^\s*(\d{1,3}(?:\.\d{1,3}){3})\s+([0-9a-fA-F]{2}(?:-[0-9a-fA-F]{2}){5})`)
-	arpHeadRe = regexp.MustCompile(`(\d{1,3}(?:\.\d{1,3}){3})[^0-9]*---`)
-)
 
 // 网络枚举缓存：C# 版 EnumerateLocalNetwork 是纯内存 API（毫秒级），
 // Go 版含一次 PowerShell 网关查询（秒级），多处调用共享同一份结果。
@@ -115,7 +108,7 @@ func enumerateLocalNetwork() LocalNetwork {
 			}
 			prefix, _ := ipNet.Mask.Size()
 			netw.Adapters = append(netw.Adapters, LocalAdapter{
-				Address: ip4.String(), Prefix: prefix, Kind: info.Kind, Label: info.Label,
+				Index: nic.Index, Address: ip4.String(), Prefix: prefix, Kind: info.Kind, Label: info.Label,
 			})
 
 			// 计算广播地址
@@ -216,49 +209,27 @@ func queryGateways() []Gateway {
 	return out
 }
 
-// AddNeighbors 解析 arp.exe -a 输出，加入候选（只保留优先级最高的地址）。
+// AddNeighbors 从 IPv4 邻居表（GetIpNetTable2）加入候选（只保留优先级最高的地址）。
+// 接口归属直接用 InterfaceIndex 关联，不再像解析 arp -a 那样靠分组头猜。
 func AddNeighbors(add func(address string, priority int, category string, source *string, mac *string, kind *string, id *string), network LocalNetwork) {
-	arp := windir.SystemDir() + string(osPathSeparator) + "arp.exe"
-	res := proc.RunQuiet(arp, []string{"-a"}, proc.WithTimeoutMs(ArpMS), proc.WithEncoding(proc.Ansi))
-	if !res.Ok() {
-		return
-	}
-
-	byInterface := map[string]LocalAdapter{}
+	byIndex := map[uint32]LocalAdapter{}
 	for _, a := range network.Adapters {
-		if _, ok := byInterface[a.Address]; !ok {
-			byInterface[a.Address] = a
+		if _, ok := byIndex[uint32(a.Index)]; !ok {
+			byIndex[uint32(a.Index)] = a
 		}
 	}
 
-	currentInterfaceIP := ""
 	count := 0
-	for _, raw := range strings.Split(res.StdOut, "\n") {
-		line := strings.TrimSpace(raw)
-		if line == "" {
-			continue
-		}
-		if strings.Contains(line, "---") {
-			if m := arpHeadRe.FindStringSubmatch(line); m != nil {
-				currentInterfaceIP = m[1]
-			}
-			continue
-		}
-		m := arpRowRe.FindStringSubmatch(line)
-		if m == nil {
-			continue
-		}
-		address := m[1]
-		mac := NormalizeMac(m[2])
-		if mac == nil || isBroadcastOrMulticast(address, mac, network) {
-			continue
-		}
-		if count >= 30 {
+	for _, n := range ipv4Neighbors() {
+		if count >= maxNeighborCount {
 			break
 		}
-		adapter, _ := byInterface[currentInterfaceIP]
-		category, source, kind := describeNeighbor(adapter)
-		add(address, 4, category, source, mac, kind, strPtr(FormatMacId(mac)))
+		mac := NormalizeMac(n.Mac)
+		if mac == nil || isBroadcastOrMulticast(n.Address, mac, network) {
+			continue
+		}
+		category, source, kind := describeNeighbor(byIndex[n.IfIndex])
+		add(n.Address, 4, category, source, mac, kind, strPtr(FormatMacId(mac)))
 		count++
 	}
 }
@@ -308,5 +279,3 @@ func containsFold(s, sub string) bool {
 }
 
 const osPathSeparator = '\\'
-
-var _ = exec.Command
