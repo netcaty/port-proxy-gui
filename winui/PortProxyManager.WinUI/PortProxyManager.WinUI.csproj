@@ -25,8 +25,8 @@
     <LangVersion>latest</LangVersion>
     <!-- 手写 Main：CLI 分发、UAC 自提权、单实例都要在 XAML 应用启动之前完成 -->
     <DefineConstants>$(DefineConstants);DISABLE_XAML_GENERATED_MAIN</DefineConstants>
-    <Version>2.1.0</Version>
-    <FileVersion>2.1.0.0</FileVersion>
+    <Version>2.2.0</Version>
+    <FileVersion>2.2.0.0</FileVersion>
     <Company>local</Company>
     <Product>PortProxy 管理器 (WinUI)</Product>
     <SatelliteResourceLanguages>zh-Hans</SatelliteResourceLanguages>
